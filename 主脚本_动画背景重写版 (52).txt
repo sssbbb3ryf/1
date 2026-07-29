@@ -1,0 +1,2151 @@
+-- ============================================================
+-- 完整脚本：矿石透视卡片 UI + 新增矿石传送列表 + 颜色同步
+-- 以 ImageLabel 动画作为 UI 背景（替换旧 Drawing 背景，解决闪烁）
+-- ============================================================
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local TweenService = game:GetService("TweenService")
+local starterGui = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- ============================================================
+-- 主 UI 创建函数（所有功能）
+-- ============================================================
+local function createMainUI()
+    print("开始创建 UI...")
+
+    local success, err = pcall(function()
+
+        -- 隐藏文件夹
+        local hiddenFolder = game:FindFirstChild("__HiddenObjects__")
+        if not hiddenFolder then
+            hiddenFolder = Instance.new("Folder")
+            hiddenFolder.Name = "__HiddenObjects__"
+            hiddenFolder.Parent = game
+        end
+
+        local targetPaths = {
+            "Things.BomberBarry",
+            "Things.ProClimber",
+            "Things.ToolWorker",
+            "Things.GroupReward",
+            "Things.StockProduct",
+            "Things.Plots.Slots",
+        }
+
+        local blockedData = {}
+
+        local function forceRefresh(instance)
+            for _, child in ipairs(instance:GetChildren()) do
+                forceRefresh(child)
+            end
+            local _ = instance.Name
+            if instance:IsA("BasePart") then
+                _ = instance.Position
+            end
+        end
+
+        local function applyBlock()
+            for _, path in ipairs(targetPaths) do
+                local obj = workspace
+                local segments = {}
+                for segment in string.gmatch(path, "[^%.]+") do
+                    table.insert(segments, segment)
+                    obj = obj and obj:FindFirstChild(segment)
+                    if not obj then break end
+                end
+                if obj then
+                    if obj.Parent ~= hiddenFolder then
+                        blockedData[obj] = { path = path, segments = segments }
+                        obj.Parent = hiddenFolder
+                    else
+                        if not blockedData[obj] then
+                            blockedData[obj] = { path = path, segments = segments }
+                        end
+                    end
+                end
+            end
+        end
+
+        local function removeBlock()
+            local objectsToRefresh = {}
+            for obj, data in pairs(blockedData) do
+                if obj and obj.Parent == hiddenFolder then
+                    local parent = workspace
+                    local segments = data.segments
+                    for i = 1, #segments - 1 do
+                        local seg = segments[i]
+                        local child = parent:FindFirstChild(seg)
+                        if child then
+                            parent = child
+                        else
+                            parent = workspace
+                            break
+                        end
+                    end
+                    obj.Parent = parent
+                    table.insert(objectsToRefresh, obj)
+                end
+            end
+            blockedData = {}
+            for _, obj in ipairs(objectsToRefresh) do
+                forceRefresh(obj)
+            end
+            task.wait(0.5)
+        end
+
+        -- 位置栈管理
+        local posStack = {}
+        local function pushPosition(cf) table.insert(posStack, cf) end
+        local function popPosition() return table.remove(posStack) end
+        local function getStackDepth() return #posStack end
+
+        -- 自动出售变量
+        local selling = false
+        local lastSellTime = 0
+
+        -- 品质过滤
+        local qualityNames = {"普通", "罕见", "稀有", "史诗", "传奇", "神话"}
+        local qualityFilters = {true, true, true, true, true, true}
+
+        print("UI 组件开始创建...")
+
+        -- 清理旧 UI（刷新用）
+        local oldAnim = playerGui:FindFirstChild("AnimBG")
+        if oldAnim then oldAnim:Destroy() end
+        local oldUI = playerGui:FindFirstChild("MyInjectorUI")
+        if oldUI then oldUI:Destroy() end
+
+        -- ============================================================
+        -- 背景样式判定：10% 动画（特殊），90% 图片（正常）
+        -- ============================================================
+        local isSpecialUI = (math.random(1, 100) <= 10)
+
+        -- ============================================================
+        -- 第一层：独立的背景 ScreenGui（DisplayOrder 低 = 渲染在后面）
+        -- ============================================================
+        local animGui = Instance.new("ScreenGui")
+        animGui.Name = "AnimBG"
+        animGui.DisplayOrder = 1
+        animGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        animGui.IgnoreGuiInset = true
+        animGui.ResetOnSpawn = false
+        animGui.Parent = playerGui
+
+        -- ============================================================
+        -- 第二层：UI 面板 ScreenGui（DisplayOrder 高 = 渲染在前面）
+        -- ============================================================
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "MyInjectorUI"
+        gui.DisplayOrder = 10
+        gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        gui.IgnoreGuiInset = true
+        gui.ResetOnSpawn = false
+        gui.Parent = playerGui
+
+        local mainFrame = Instance.new("Frame")
+        mainFrame.Size = UDim2.new(0, 600, 0, 300)
+        mainFrame.Position = UDim2.new(0.5, -300, 0.5, -150)
+        mainFrame.BackgroundTransparency = 1
+        mainFrame.ZIndex = 100
+        mainFrame.Parent = gui
+
+        if not isSpecialUI then
+            -- 正常 UI（90%）：图片背景 + 淡蓝色填充
+            local normalBg = Instance.new("Frame")
+            normalBg.Size = UDim2.new(0, 600, 0, 300)
+            normalBg.Position = UDim2.new(0.5, -300, 0.5, -150)
+            normalBg.BackgroundColor3 = Color3.fromRGB(173, 216, 230) -- 淡蓝色
+            normalBg.BackgroundTransparency = 0
+            normalBg.ZIndex = 0
+            normalBg.Parent = animGui
+
+            local normalImg = Instance.new("ImageLabel")
+            normalImg.Size = UDim2.new(0, 600, 0, 300)
+            normalImg.Position = UDim2.new(0.5, -300, 0.5, -150)
+            normalImg.BackgroundTransparency = 1
+            normalImg.ImageTransparency = 1
+            normalImg.ZIndex = 1
+            normalImg.ScaleType = Enum.ScaleType.Stretch
+            normalImg.Parent = animGui
+
+            task.spawn(function()
+                -- 请确保仓库中文件已重命名为 bg.jpg
+                local NORMAL_URL = "https://raw.githubusercontent.com/sssbbb3ryf/h-h-h/main/bg.jpg"
+                local NORMAL_FILE = "normal_ui_bg_v2.jpg"
+                if isfile(NORMAL_FILE) then delfile(NORMAL_FILE) end
+                local ok, dlErr = pcall(function()
+                    local data = game:HttpGet(NORMAL_URL)
+                    if data and #data > 1000 then
+                        writefile(NORMAL_FILE, data)
+                        print("[正常UI] 图片已下载，大小:", #data)
+                    else
+                        warn("[正常UI] 下载失败，数据过小:", data and #data or 0)
+                    end
+                end)
+                if not ok then warn("[正常UI] HttpGet错误:", dlErr) end
+                if isfile(NORMAL_FILE) then
+                    local assetUrl = getcustomasset(NORMAL_FILE)
+                    if assetUrl then
+                        normalImg.Image = assetUrl
+                        normalImg.ImageTransparency = 0
+                        print("[正常UI] 图片背景已加载")
+                    end
+                end
+            end)
+        end
+
+        -- ============================================================
+        -- 动画：预创建 152 个 ImageLabel（仅特殊 UI 时加载）
+        -- ============================================================
+        local GITEE_BASE = "https://gitee.com/xsadad_0/roxy/raw/main/"
+        local ANIM_TOTAL = 152
+        local CACHE_FOLDER = "anim_bg_cache"
+        if makefolder then makefolder(CACHE_FOLDER) end
+
+        if isSpecialUI then
+        -- 预创建 152 个 ImageLabel 容器（全部初始透明）
+        local bgFrames = {}
+        for i = 1, ANIM_TOTAL do
+            local lbl = Instance.new("ImageLabel")
+            lbl.Name = "BgF" .. i
+            lbl.Size = UDim2.new(0, 600, 0, 300)
+            lbl.Position = UDim2.new(0.5, -300, 0.5, -150)
+            lbl.BackgroundTransparency = 1
+            lbl.ImageTransparency = 1  -- 初始隐藏
+            lbl.ZIndex = 1
+            lbl.Parent = animGui
+            bgFrames[i] = lbl
+        end
+
+        task.spawn(function()
+            print("[背景] 开始加载 152 帧到各自 ImageLabel...")
+            for i = 1, ANIM_TOTAL do
+                local fname = string.format("frame_%04d.jpg", i)
+                local fpath = CACHE_FOLDER .. "/" .. fname
+                local url = nil
+
+                if isfile and isfile(fpath) and readfile then
+                    if getcustomasset then
+                        url = getcustomasset(fpath)
+                    else
+                        url = GITEE_BASE .. fname
+                    end
+                else
+                    local ok, data = pcall(function()
+                        return game:HttpGet(GITEE_BASE .. fname)
+                    end)
+                    if ok and data then
+                        if writefile then writefile(fpath, data) end
+                    end
+                    if getcustomasset then
+                        url = getcustomasset(fpath)
+                    else
+                        url = GITEE_BASE .. fname
+                    end
+                end
+
+                -- 把图片设置到对应的 ImageLabel（只设一次，之后永远不改）
+                bgFrames[i].Image = url or ""
+
+                -- 第一帧立即显示
+                if i == 1 then
+                    bgFrames[1].ImageTransparency = 0
+                    print("[背景] 第一帧已显示")
+                end
+            end
+
+            print("[背景] 152帧全部加载完毕，预加载到 GPU...")
+            -- 把所有 ImageLabel 传入 PreloadAsync，强制引擎上传到 GPU
+            local ContentProvider = game:GetService("ContentProvider")
+            pcall(function()
+                ContentProvider:PreloadAsync(bgFrames)
+            end)
+            print("[背景] GPU 预加载完成，开始循环播放")
+
+            -- 播放循环：只切换透明度，不碰 Image 属性
+            local cur = 1
+            local lastSwitch = 0
+            local FPS = 30
+            local interval = 1 / FPS
+
+            local animConn
+            animConn = RunService.RenderStepped:Connect(function()
+                if not animGui or not animGui.Parent then
+                    if animConn then animConn:Disconnect() end
+                    return
+                end
+                local now = tick()
+                if now - lastSwitch >= interval then
+                    lastSwitch = now
+                    -- 隐藏当前帧
+                    bgFrames[cur].ImageTransparency = 1
+                    -- 切到下一帧并显示
+                    cur = cur + 1
+                    if cur > ANIM_TOTAL then cur = 1 end
+                    bgFrames[cur].ImageTransparency = 0
+                end
+            end)
+        end)
+
+        end -- if isSpecialUI（10% 特殊动画）
+
+        -- 爱心后缀：常规UI无爱心，特殊UI有爱心（公告除外）
+        local hs = isSpecialUI and "♡" or ""
+        local hs_all = isSpecialUI and "♡" or ""  -- 特殊UI保留，常规UI去掉
+
+        local transparencyElements = {}
+
+        -- 统一 UI 能见度：特殊 UI 35%，正常 UI 40%
+        local function applyReducedTransparency()
+            -- 特殊UI(动画背景)按钮35%能见度, 正常UI(图片背景)按钮40%能见度
+            local normalMode = not isSpecialUI
+            local bgT = normalMode and 0.60 or 0.65   -- 背景
+            local btnBgT = normalMode and 0.60 or 0.65 -- 按钮背景
+            local txtT = normalMode and 0.60 or 0.65  -- 文字
+            leftPanel.BackgroundTransparency = bgT
+            rightPanel.BackgroundTransparency = 1
+            for _, elem in ipairs(transparencyElements) do
+                if elem:IsA("TextButton") or elem:IsA("ImageButton") then
+                    elem.BackgroundTransparency = btnBgT
+                    elem.TextTransparency = txtT
+                elseif elem:IsA("Frame") then
+                    elem.BackgroundTransparency = bgT
+                end
+            end
+            -- 左侧三个按钮（也是按钮，30% 能见度）
+            if btn1 then
+                btn1.BackgroundTransparency = btnBgT
+                btn1.TextTransparency = txtT
+            end
+            if btn2 then
+                btn2.BackgroundTransparency = btnBgT
+                btn2.TextTransparency = txtT
+            end
+            if btn3 then
+                btn3.BackgroundTransparency = btnBgT
+                btn3.TextTransparency = txtT
+            end
+            -- 详情文本
+            if detailsLabel then detailsLabel.TextTransparency = txtT end
+            -- 飞升按钮
+            if upArrowBtn then
+                upArrowBtn.BackgroundTransparency = btnBgT
+                upArrowBtn.TextTransparency = txtT
+            end
+            if downArrowBtn then
+                downArrowBtn.BackgroundTransparency = btnBgT
+                downArrowBtn.TextTransparency = txtT
+            end
+            -- 传送/返回按钮
+            if teleportBtn then
+                teleportBtn.BackgroundTransparency = btnBgT
+                teleportBtn.TextTransparency = txtT
+            end
+            if returnBtn then
+                returnBtn.BackgroundTransparency = btnBgT
+                returnBtn.TextTransparency = txtT
+            end
+        end
+
+        -- 左侧面板（ZIndex 提升到 10，确保在背景之上）
+        local leftPanel = Instance.new("Frame")
+        leftPanel.Size = UDim2.new(0, 150, 1, 0)
+        leftPanel.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        leftPanel.BackgroundTransparency = 0.65
+        leftPanel.ZIndex = 10
+        leftPanel.Parent = mainFrame
+
+        -- 右侧面板
+        local rightPanel = Instance.new("Frame")
+        rightPanel.Size = UDim2.new(1, -160, 1, -10)
+        rightPanel.Position = UDim2.new(0, 160, 0, 5)
+        rightPanel.BackgroundTransparency = 1
+        rightPanel.ZIndex = 10
+        rightPanel.Parent = mainFrame
+
+        -- 左侧按钮
+        local btn1 = Instance.new("TextButton")
+        btn1.Size = UDim2.new(1, -10, 0, 40)
+        btn1.Position = UDim2.new(0, 5, 0, 10)
+        btn1.Text = "脚本详情" .. hs_all
+        btn1.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        btn1.TextColor3 = Color3.fromRGB(255, 182, 193)
+        btn1.ZIndex = 11
+        btn1.Parent = leftPanel
+
+        local btn2 = Instance.new("TextButton")
+        btn2.Size = UDim2.new(1, -10, 0, 40)
+        btn2.Position = UDim2.new(0, 5, 0, 60)
+        btn2.Text = "自动类别" .. hs_all
+        btn2.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        btn2.TextColor3 = Color3.fromRGB(255, 182, 193)
+        btn2.ZIndex = 11
+        btn2.Parent = leftPanel
+        
+        local btn3 = Instance.new("TextButton")
+        btn3.Size = UDim2.new(1, -10, 0, 40)
+        btn3.Position = UDim2.new(0, 5, 0, 110)
+        btn3.Text = "矿石传送" .. hs_all
+        btn3.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        btn3.TextColor3 = Color3.fromRGB(255, 182, 193)
+        btn3.ZIndex = 11
+        btn3.Parent = leftPanel
+
+        -- 选项卡1：脚本详情
+        local tab1 = Instance.new("Frame")
+        tab1.Size = UDim2.new(1, 0, 1, 0)
+        tab1.Position = UDim2.new(0, 0, 0, 0)
+        tab1.BackgroundTransparency = 1
+        tab1.ZIndex = 10
+        tab1.Parent = rightPanel
+
+        local boardContainer = Instance.new("Frame")
+        boardContainer.Size = UDim2.new(1, -20, 1, -20)
+        boardContainer.Position = UDim2.new(0, 10, 0, 10)
+        boardContainer.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        boardContainer.BackgroundTransparency = 0.65
+        boardContainer.ZIndex = 11
+        boardContainer.Parent = tab1
+
+        local detailsLabel = Instance.new("TextLabel")
+        detailsLabel.Size = UDim2.new(1, -20, 1, -20)
+        detailsLabel.Position = UDim2.new(0, 10, 0, 10)
+        detailsLabel.Text = [=[[开采雪峰山]
+此脚本为brotherhua制作
+左侧选择功能列表
+实则就是多此一举:(]=]
+        detailsLabel.TextWrapped = true
+        detailsLabel.TextScaled = true
+        detailsLabel.BackgroundTransparency = 1
+        detailsLabel.TextColor3 = Color3.fromRGB(255, 182, 193)
+        detailsLabel.ZIndex = 12
+        detailsLabel.Parent = boardContainer
+
+        -- 选项卡2：自动类别
+        local tab2 = Instance.new("Frame")
+        tab2.Size = UDim2.new(1, 0, 1, 0)
+        tab2.Position = UDim2.new(0, 0, 0, 0)
+        tab2.BackgroundTransparency = 1
+        tab2.Visible = false
+        tab2.ZIndex = 10
+        tab2.Parent = rightPanel
+
+        local scroll = Instance.new("ScrollingFrame")
+        scroll.Size = UDim2.new(1, 0, 1, 0)
+        scroll.BackgroundTransparency = 1
+        scroll.ZIndex = 10
+        scroll.Parent = tab2
+        scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+        -- 选项卡3：矿石传送列表
+        local tab3 = Instance.new("Frame")
+        tab3.Size = UDim2.new(1, 0, 1, 0)
+        tab3.Position = UDim2.new(0, 0, 0, 0)
+        tab3.BackgroundTransparency = 1
+        tab3.Visible = false
+        tab3.ZIndex = 10
+        tab3.Parent = rightPanel
+
+        local tpScroll = Instance.new("ScrollingFrame")
+        tpScroll.Size = UDim2.new(1, -10, 1, -10)
+        tpScroll.Position = UDim2.new(0, 5, 0, 5)
+        tpScroll.BackgroundTransparency = 1
+        tpScroll.ZIndex = 10
+        tpScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+        tpScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        tpScroll.ScrollBarThickness = 6
+        tpScroll.ScrollBarImageColor3 = Color3.fromHSV(0, 1, 1)
+        tpScroll.ScrollBarImageTransparency = 0.3
+        tpScroll.Parent = tab3
+
+        -- 矿石传送列表滚动条彩虹色动画
+        spawn(function()
+            while tpScroll and tpScroll.Parent do
+                local hue = (os.clock() % 3) / 3
+                tpScroll.ScrollBarImageColor3 = Color3.fromHSV(hue, 1, 1)
+                task.wait(0.05)
+            end
+        end)
+
+        local tpListLayout = Instance.new("UIListLayout")
+        tpListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        tpListLayout.Padding = UDim.new(0, 5)
+        tpListLayout.Parent = tpScroll
+
+        print("面板和按钮创建完成")
+
+        -- ============================================================
+        -- 功能逻辑
+        -- ============================================================
+
+        -- 自动出售：检测到 Sell 弹窗后自动执行，传送→持续出售1秒→自动传回
+        local sellTargetCF = CFrame.new(
+            -46.0041466, 28.2632484, 1066.44812,
+            -0.00915288925, -0.0258089378, 0.999624968,
+            -0.0115938438, 0.999602437, 0.0257021971,
+            -0.999890924, -0.0113542452, -0.00944840908
+        )
+        local sellDuration = 1  -- 出售持续时间（秒）
+        local sellInterval = 0.1  -- 出售指令间隔（秒）
+
+        local sellPaused = false  -- 矿石传送期间暂停自动出售
+        local sellEnabled = false  -- 自动出售开关，默认关闭
+
+        local function autoSell()
+            if selling or sellPaused then return end
+            if (tick() - lastSellTime) < 5 then return end
+            local char = player.Character
+            if not char then return end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+
+            selling = true
+            local savedPos = hrp.CFrame
+            lastSellTime = tick()
+            print("[出售] 检测到出售界面，自动执行出售...")
+
+            -- 传送到出售点
+            hrp.CFrame = sellTargetCF
+            task.wait(0.1)
+
+            -- 持续发送出售指令，持续 sellDuration 秒
+            local startTime = tick()
+            local sellCount = 0
+            while (tick() - startTime) < sellDuration do
+                pcall(function()
+                    local remote = ReplicatedStorage:FindFirstChild("Remotes")
+                    if remote then
+                        local sr = remote:FindFirstChild("SellRequest")
+                        if sr then sr:FireServer("all") end
+                    end
+                end)
+                sellCount = sellCount + 1
+                task.wait(sellInterval)
+            end
+
+            -- 传送回原位（等角色稳定，最多重试10次）
+            for retry = 1, 10 do
+                char = player.Character
+                if char then
+                    hrp = char:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        hrp.CFrame = savedPos
+                        break
+                    end
+                end
+                task.wait(0.3)
+            end
+
+            -- 强制关闭出售 UI
+            pcall(function()
+                local sell = playerGui:FindFirstChild("Sell")
+                if sell then
+                    local frame = sell:FindFirstChild("Frame")
+                    if frame and frame.Visible then
+                        frame.Visible = false
+                    end
+                end
+            end)
+            -- 同步 hook 状态为已关闭
+            sellWasShowing = false
+
+            selling = false
+            print("[出售] 出售完成（发送" .. sellCount .. "次指令），已自动返回原位")
+        end
+
+        -- 监听 PlayerGui.Sell.Frame 的 Visible 变化
+        local sellWasShowing = false
+
+        local function hookSellFrame(sellFrame)
+            if not sellFrame then return end
+            sellWasShowing = sellFrame.Visible
+            pcall(function()
+                sellFrame:GetPropertyChangedSignal("Visible"):Connect(function()
+                    if selling or not sellEnabled then return end
+                    if sellFrame.Visible and not sellWasShowing then
+                        sellWasShowing = true
+                        task.spawn(function()
+                            task.wait(0.15)
+                            autoSell()
+                        end)
+                    elseif not sellFrame.Visible then
+                        sellWasShowing = false
+                    end
+                end)
+            end)
+        end
+
+        local function tryHookSell()
+            local sell = playerGui:FindFirstChild("Sell")
+            if sell then
+                local frame = sell:FindFirstChild("Frame")
+                if frame then
+                    hookSellFrame(frame)
+                    return true
+                end
+            end
+            return false
+        end
+
+        -- 如果 Sell.Frame 还不存在，等它出现
+        if not tryHookSell() then
+            -- 先等 Sell 出现
+            local sellObj = playerGui:FindFirstChild("Sell")
+            if not sellObj then
+                playerGui.ChildAdded:Connect(function(child)
+                    if child.Name == "Sell" then
+                        local frame = child:WaitForChild("Frame", 5)
+                        if frame then
+                            hookSellFrame(frame)
+                        end
+                    end
+                end)
+            else
+                -- Sell 存在但 Frame 还没加载
+                sellObj.ChildAdded:Connect(function(child)
+                    if child.Name == "Frame" then
+                        hookSellFrame(child)
+                    end
+                end)
+            end
+        end
+
+        -- 自动收集
+        local collectActive = false
+        local collectThread = nil
+        local rangePart = nil
+        local heartbeatConnection = nil
+
+        local function createRangePart()
+            if rangePart then return end
+            rangePart = Instance.new("Part")
+            rangePart.Size = Vector3.new(36, 36, 36)
+            rangePart.Shape = Enum.PartType.Ball
+            rangePart.Transparency = 1
+            rangePart.Anchored = true
+            rangePart.CanCollide = false
+            rangePart.Material = Enum.Material.SmoothPlastic
+            rangePart.BrickColor = BrickColor.new("Bright blue")
+            rangePart.Parent = workspace
+        end
+
+        local function destroyRangePart()
+            if rangePart then
+                rangePart:Destroy()
+                rangePart = nil
+            end
+        end
+
+        local function getPromptPart(prompt)
+            local part = prompt:FindFirstAncestorOfClass("BasePart")
+            if part then return part end
+            if prompt.Parent and prompt.Parent:IsA("BasePart") then
+                return prompt.Parent
+            end
+            local parent = prompt.Parent
+            if parent then
+                for _, child in ipairs(parent:GetDescendants()) do
+                    if child:IsA("BasePart") then
+                        return child
+                    end
+                end
+            end
+            return nil
+        end
+
+        local function isInRange(part)
+            if not rangePart or not part then return false end
+            local center = rangePart.Position
+            local radius = 18
+            local distance = (part.Position - center).Magnitude
+            return distance <= radius
+        end
+
+        local function startCollect()
+            if collectThread then return end
+            collectActive = true
+            applyBlock()
+            task.wait(0.5)
+            createRangePart()
+            task.wait(0.5)
+
+            heartbeatConnection = RunService.Heartbeat:Connect(function()
+                if not collectActive then return end
+                local char = player.Character
+                if char and rangePart then
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        rangePart.CFrame = hrp.CFrame
+                    end
+                end
+            end)
+
+            collectThread = coroutine.create(function()
+                while collectActive do
+                    local char = player.Character
+                    if char and rangePart then
+                        local hrp = char:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            local runtime = workspace:FindFirstChild("Runtime")
+                            local scanRoot = runtime and runtime:FindFirstChild("LootPoints") or workspace
+                            for _, obj in ipairs(scanRoot:GetDescendants()) do
+                                if obj:IsA("ProximityPrompt") then
+                                    local part = getPromptPart(obj)
+                                    if part and isInRange(part) then
+                                        pcall(function() fireproximityprompt(obj) end)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    task.wait(0.5)
+                end
+                collectThread = nil
+            end)
+            coroutine.resume(collectThread)
+        end
+
+        local function stopCollect()
+            collectActive = false
+            if heartbeatConnection then
+                heartbeatConnection:Disconnect()
+                heartbeatConnection = nil
+            end
+            local waitCount = 0
+            while collectThread and waitCount < 20 do
+                task.wait(0.05)
+                waitCount = waitCount + 1
+            end
+            destroyRangePart()
+            removeBlock()
+        end
+
+        -- 飞升
+        local flyActive = false
+        local flyPart = nil
+        local flyHeartbeat = nil
+        local flyUpPressed = false
+        local flyDownPressed = false
+
+        local upArrowBtn = Instance.new("TextButton")
+        upArrowBtn.Size = UDim2.new(0, 50, 0, 40)
+        upArrowBtn.Position = UDim2.new(1, -65, 0.5, -80)
+        upArrowBtn.Text = "▲"
+        upArrowBtn.TextSize = 25
+        upArrowBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+        upArrowBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        upArrowBtn.ZIndex = 1001
+        upArrowBtn.Visible = false
+        upArrowBtn.Parent = gui
+
+        local downArrowBtn = Instance.new("TextButton")
+        downArrowBtn.Size = UDim2.new(0, 50, 0, 40)
+        downArrowBtn.Position = UDim2.new(1, -65, 0.5, 30)
+        downArrowBtn.Text = "▼"
+        downArrowBtn.TextSize = 25
+        downArrowBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+        downArrowBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        downArrowBtn.ZIndex = 1001
+        downArrowBtn.Visible = false
+        downArrowBtn.Parent = gui
+
+        local function createFlyPlatform()
+            local char = player.Character
+            if not char then return end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            if flyPart then flyPart:Destroy(); flyPart = nil end
+            flyPart = Instance.new("Part")
+            flyPart.Size = Vector3.new(4, 0.5, 4)
+            flyPart.Transparency = 1
+            flyPart.BrickColor = BrickColor.new("Bright blue")
+            flyPart.Material = Enum.Material.SmoothPlastic
+            flyPart.Anchored = true
+            flyPart.CanCollide = true
+            flyPart.Parent = workspace
+            flyPart.CFrame = CFrame.new(hrp.Position - Vector3.new(0, 2.5, 0))
+        end
+
+        local function destroyFlyPlatform()
+            if flyPart then
+                flyPart:Destroy()
+                flyPart = nil
+            end
+        end
+
+        local function onArrowPress(dir)
+            return function()
+                if not flyActive then return end
+                if dir == "up" then
+                    flyUpPressed = true
+                    flyDownPressed = false
+                elseif dir == "down" then
+                    flyDownPressed = true
+                    flyUpPressed = false
+                end
+                if not flyPart then createFlyPlatform() end
+                if not flyHeartbeat then
+                    flyHeartbeat = RunService.Heartbeat:Connect(function()
+                        if not flyActive then return end
+                        local char = player.Character
+                        if not char then return end
+                        local hrp = char:FindFirstChild("HumanoidRootPart")
+                        if not hrp then return end
+                        if not flyPart then createFlyPlatform() end
+                        if flyPart then
+                            local currentPos = flyPart.Position
+                            local targetXZ = Vector3.new(hrp.Position.X, currentPos.Y, hrp.Position.Z)
+                            flyPart.CFrame = CFrame.new(targetXZ)
+                            local speed = 10
+                            local delta = 0.1
+                            if flyUpPressed and not flyDownPressed then
+                                flyPart.CFrame = flyPart.CFrame + Vector3.new(0, speed * delta, 0)
+                            elseif flyDownPressed and not flyUpPressed then
+                                flyPart.CFrame = flyPart.CFrame - Vector3.new(0, speed * delta, 0)
+                            end
+                        end
+                    end)
+                end
+            end
+        end
+
+        local function onArrowRelease()
+            flyUpPressed = false
+            flyDownPressed = false
+        end
+
+        upArrowBtn.MouseButton1Down:Connect(onArrowPress("up"))
+        upArrowBtn.MouseButton1Up:Connect(onArrowRelease)
+        downArrowBtn.MouseButton1Down:Connect(onArrowPress("down"))
+        downArrowBtn.MouseButton1Up:Connect(onArrowRelease)
+
+        local function toggleFly(state)
+            flyActive = state
+            upArrowBtn.Visible = state
+            downArrowBtn.Visible = state
+            if not state then
+                flyUpPressed = false
+                flyDownPressed = false
+                if flyHeartbeat then
+                    flyHeartbeat:Disconnect()
+                    flyHeartbeat = nil
+                end
+                destroyFlyPlatform()
+            end
+        end
+
+        -- ============================================================
+        -- 矿石透视（使用 BillboardGui）
+        -- ============================================================
+        local oreViewActive = false
+        local oreData = {}
+        local oreHeartbeat = nil
+        local selectedOre = nil
+        local oreDoubleClickTimer = 0.3
+        local platformOre = nil
+
+        local function createCardUI()
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(0, 220, 0, 110)
+            frame.BackgroundTransparency = 1
+            frame.ZIndex = 9999
+
+            local topBar = Instance.new("Frame")
+            topBar.Size = UDim2.new(1, 0, 0, 15)
+            topBar.Position = UDim2.new(0, 0, 0, 0)
+            topBar.BackgroundTransparency = 0.65
+            topBar.ZIndex = 10000
+            topBar.Parent = frame
+
+            local body = Instance.new("Frame")
+            body.Size = UDim2.new(1, 0, 1, -15)
+            body.Position = UDim2.new(0, 0, 0, 15)
+            body.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+            body.BackgroundTransparency = 0.65
+            body.ZIndex = 9999
+            body.Parent = frame
+
+            local nameLabel = Instance.new("TextLabel")
+            nameLabel.Size = UDim2.new(0.65, -10, 0.5, 0)
+            nameLabel.Position = UDim2.new(0, 5, 0, 0)
+            nameLabel.BackgroundTransparency = 1
+            nameLabel.TextColor3 = Color3.fromRGB(200,200,200)
+            nameLabel.TextScaled = true
+            nameLabel.Font = Enum.Font.SourceSansBold
+            nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+            nameLabel.TextYAlignment = Enum.TextYAlignment.Top
+            nameLabel.ZIndex = 10000
+            nameLabel.Parent = body
+
+            local distLabel = Instance.new("TextLabel")
+            distLabel.Size = UDim2.new(0.3, -5, 0.5, 0)
+            distLabel.Position = UDim2.new(0.65, 0, 0, 0)
+            distLabel.BackgroundTransparency = 1
+            distLabel.TextColor3 = Color3.fromRGB(200,200,200)
+            distLabel.TextScaled = true
+            distLabel.Font = Enum.Font.SourceSans
+            distLabel.TextXAlignment = Enum.TextXAlignment.Right
+            distLabel.TextYAlignment = Enum.TextYAlignment.Top
+            distLabel.ZIndex = 10000
+            distLabel.Parent = body
+
+            local priceLabel = Instance.new("TextLabel")
+            priceLabel.Size = UDim2.new(0.33, -5, 0.5, 0)
+            priceLabel.Position = UDim2.new(0, 5, 0.5, 0)
+            priceLabel.BackgroundTransparency = 1
+            priceLabel.TextColor3 = Color3.fromRGB(255,215,0)
+            priceLabel.TextScaled = true
+            priceLabel.Font = Enum.Font.SourceSans
+            priceLabel.TextXAlignment = Enum.TextXAlignment.Left
+            priceLabel.TextYAlignment = Enum.TextYAlignment.Top
+            priceLabel.ZIndex = 10000
+            priceLabel.Parent = body
+
+            local qualityLabel = Instance.new("TextLabel")
+            qualityLabel.Size = UDim2.new(0.33, -5, 0.5, 0)
+            qualityLabel.Position = UDim2.new(0.33, 0, 0.5, 0)
+            qualityLabel.BackgroundTransparency = 1
+            qualityLabel.TextColor3 = Color3.fromRGB(200,200,200)
+            qualityLabel.TextScaled = true
+            qualityLabel.Font = Enum.Font.SourceSans
+            qualityLabel.TextXAlignment = Enum.TextXAlignment.Center
+            qualityLabel.TextYAlignment = Enum.TextYAlignment.Top
+            qualityLabel.ZIndex = 10000
+            qualityLabel.Parent = body
+
+            local weightLabel = Instance.new("TextLabel")
+            weightLabel.Size = UDim2.new(0.33, -5, 0.5, 0)
+            weightLabel.Position = UDim2.new(0.67, 0, 0.5, 0)
+            weightLabel.BackgroundTransparency = 1
+            weightLabel.TextColor3 = Color3.fromRGB(200,200,200)
+            weightLabel.TextScaled = true
+            weightLabel.Font = Enum.Font.SourceSans
+            weightLabel.TextXAlignment = Enum.TextXAlignment.Right
+            weightLabel.TextYAlignment = Enum.TextYAlignment.Top
+            weightLabel.ZIndex = 10000
+            weightLabel.Parent = body
+
+            return {
+                frame = frame,
+                topBar = topBar,
+                nameLabel = nameLabel,
+                distLabel = distLabel,
+                priceLabel = priceLabel,
+                qualityLabel = qualityLabel,
+                weightLabel = weightLabel,
+            }
+        end
+
+        local teleportBtn = Instance.new("TextButton")
+        teleportBtn.Size = UDim2.new(0, 50, 0, 40)
+        teleportBtn.Position = UDim2.new(1, -65, 0.5, 75)
+        teleportBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        teleportBtn.BackgroundTransparency = 0.65
+        teleportBtn.Text = "传送" .. hs_all
+        teleportBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+        teleportBtn.TextSize = 16
+        teleportBtn.Font = Enum.Font.SourceSansBold
+        teleportBtn.ZIndex = 9999
+        teleportBtn.Visible = false
+        teleportBtn.Parent = gui
+
+        local returnBtn = Instance.new("TextButton")
+        returnBtn.Size = UDim2.new(0, 50, 0, 40)
+        returnBtn.Position = UDim2.new(1, -65, 0.5, 120)
+        returnBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        returnBtn.BackgroundTransparency = 0.65
+        returnBtn.Text = "返回"
+        returnBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+        returnBtn.TextSize = 16
+        returnBtn.Font = Enum.Font.SourceSansBold
+        returnBtn.ZIndex = 9999
+        returnBtn.Visible = false
+        returnBtn.Parent = gui
+
+        local tpMoving = false  -- 传送进行中
+        local tpLockConn = nil  -- 到达后锁定位置的连接
+
+        local function disableAllCollision(char)
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+
+        local function restoreAllCollision(char)
+            local restoreNames = {
+                "HumanoidRootPart", "Head", "UpperTorso", "LowerTorso",
+                "LeftUpperArm", "LeftLowerArm", "LeftHand",
+                "RightUpperArm", "RightLowerArm", "RightHand",
+                "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+                "RightUpperLeg", "RightLowerLeg", "RightFoot"
+            }
+            for _, part in ipairs(char:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    for _, name in ipairs(restoreNames) do
+                        if part.Name == name then
+                            part.CanCollide = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
+
+        local function performTeleport()
+            if not selectedOre then
+                print("请先选中目标矿石")
+                return
+            end
+            if tpMoving then
+                print("传送进行中，请稍候")
+                return
+            end
+            if selling then
+                print("正在自动出售中，请稍候")
+                return
+            end
+            local char = player.Character
+            if not char then return end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            local pos = selectedOre.Position
+            if not pos then return end
+
+            tpMoving = true
+            pushPosition(hrp.CFrame)
+
+            -- 断开旧的锁定连接
+            if tpLockConn then
+                tpLockConn:Disconnect()
+                tpLockConn = nil
+            end
+            -- 删除旧平台
+            if platformOre then
+                platformOre:Destroy()
+                platformOre = nil
+            end
+
+            -- 关闭碰撞
+            disableAllCollision(char)
+
+            -- 锚定 hrp 并瞬移
+            hrp.Anchored = true
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            hrp.CFrame = CFrame.new(pos)
+
+            -- 在脚底生成平台
+            platformOre = Instance.new("Part")
+            platformOre.Size = Vector3.new(8, 0.5, 8)
+            platformOre.CFrame = CFrame.new(pos) * CFrame.new(0, -3, 0)
+            platformOre.Anchored = true
+            platformOre.CanCollide = true
+            platformOre.Transparency = 0.5
+            platformOre.BrickColor = BrickColor.new("Bright blue")
+            platformOre.Parent = workspace
+
+            -- 恢复碰撞
+            restoreAllCollision(char)
+
+            -- 立即解除锚定，让玩家可以交互
+            hrp.Anchored = false
+
+            -- 用 heartbeat 持续覆盖位置对抗服务器拉回（不锚定）
+            local lockTarget = hrp.CFrame
+            local lockActive = true
+            tpLockConn = RunService.Heartbeat:Connect(function()
+                if not lockActive then
+                    tpLockConn:Disconnect()
+                    tpLockConn = nil
+                    return
+                end
+                pcall(function()
+                    hrp.CFrame = lockTarget
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                end)
+            end)
+            -- 3秒后停止锁定
+            task.delay(3, function()
+                lockActive = false
+            end)
+
+            -- 传送后立即触发交互
+            if collectActive then
+                task.spawn(function()
+                    for attempt = 1, 6 do
+                        task.wait(0.15)
+                        if not collectActive then return end
+                        pcall(function()
+                            local c2 = player.Character
+                            if not c2 then return end
+                            local h2 = c2:FindFirstChild("HumanoidRootPart")
+                            if not h2 then return end
+                            if rangePart then
+                                rangePart.CFrame = h2.CFrame
+                            end
+                            for _, obj in ipairs(workspace:GetDescendants()) do
+                                if obj:IsA("ProximityPrompt") then
+                                    local p = getPromptPart(obj)
+                                    if p and isInRange(p) then
+                                        pcall(function() fireproximityprompt(obj) end)
+                                    end
+                                end
+                            end
+                        end)
+                    end
+                end)
+            end
+
+            tpMoving = false
+            teleportBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+            returnBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+            print("已传送，位置已入栈，锁定3秒")
+        end
+
+        teleportBtn.MouseButton1Click:Connect(performTeleport)
+
+        returnBtn.MouseButton1Click:Connect(function()
+            if selling then
+                print("正在自动出售中，请稍候")
+                return
+            end
+            -- 如果传送锁定还在进行，强制结束
+            if tpLockConn then
+                tpLockConn:Disconnect()
+                tpLockConn = nil
+            end
+            if tpMoving then
+                tpMoving = false
+            end
+            -- 恢复碰撞
+            local char = player.Character
+            if char then restoreAllCollision(char) end
+
+            sellPaused = false
+            local pos = popPosition()
+            if pos then
+                char = player.Character
+                if char then
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        hrp.CFrame = pos
+                    end
+                end
+                if platformOre then
+                    platformOre:Destroy()
+                    platformOre = nil
+                end
+                teleportBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+                returnBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+                print("已返回上一位置，剩余栈深度: " .. getStackDepth())
+            else
+                print("没有可返回的位置")
+                sellPaused = false
+            end
+        end)
+
+        local function shouldExcludePart(part)
+            if not part then return true end
+            local function checkName(name)
+                if not name then return false end
+                local lower = name:lower()
+                if lower:sub(1, 6) == "placed" then return true end
+                local excluded = {
+                    "npcyea", "duckguide",
+                    "bomberbarry", "upgradesprox", "shopprox",
+                    "groupreward", "sellprox", "stockproduct"
+                }
+                for _, e in ipairs(excluded) do
+                    if lower == e then return true end
+                end
+                return false
+            end
+            if checkName(part.Name) then return true end
+            local parent = part.Parent
+            if parent and parent:IsA("Model") then
+                if checkName(parent.Name) then return true end
+            end
+            return false
+        end
+
+        local function getPromptPartOre(prompt)
+            local part = prompt:FindFirstAncestorOfClass("BasePart")
+            if part then return part end
+            if prompt.Parent and prompt.Parent:IsA("BasePart") then
+                return prompt.Parent
+            end
+            local parent = prompt.Parent
+            if parent then
+                for _, child in ipairs(parent:GetDescendants()) do
+                    if child:IsA("BasePart") then
+                        return child
+                    end
+                end
+            end
+            return nil
+        end
+
+        local QUALITY_NAMES = {"普通", "罕见", "稀有", "史诗", "传奇", "神话"}
+        local QUALITY_COLORS = {
+            Color3.fromRGB(255,182,193),
+            Color3.fromRGB(0,255,0),
+            Color3.fromRGB(0,0,255),
+            Color3.fromRGB(128,0,128),
+            Color3.fromRGB(255,215,0),
+            nil
+        }
+
+        local function parseObjectText(text)
+            if not text or text == "" then return nil end
+            local parts = {}
+            for part in string.gmatch(text, "[^•]+") do
+                local trimmed = part:gsub("^%s+", ""):gsub("%s+$", "")
+                table.insert(parts, trimmed)
+            end
+            if #parts >= 3 then
+                local namePart = parts[1]
+                local name = namePart:match("%S+$") or namePart
+                return {
+                    name = name,
+                    weight = parts[2],
+                    price = parts[3]
+                }
+            end
+            return nil
+        end
+
+        local function getQualityFromName(name)
+            if not name then return 0 end
+            local lower = name:lower()
+            if lower:find("crystal_t1") then return 0 end
+            if lower:find("crystal_t2") then return 1 end
+            if lower:find("crystal_t3") then return 2 end
+            if lower:find("crystal_t4") then return 3 end
+            if lower:find("crystal_t5") then return 4 end
+            if lower:find("crystal_t6") then return 5 end
+            return 0
+        end
+        
+        local function extractWeightNumber(weightStr)
+            if not weightStr then return 0 end
+            local num = tonumber(weightStr:match("%d+%.?%d*"))
+            return num or 0
+        end
+
+        local oreGui = Instance.new("ScreenGui")
+        oreGui.Name = "OreViewer"
+        oreGui.ResetOnSpawn = false
+        oreGui.IgnoreGuiInset = true
+        oreGui.DisplayOrder = 9999
+        oreGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        oreGui.Parent = playerGui
+        oreGui.Enabled = false
+
+        local function updateOreLabels()
+            local scanRoot = workspace:FindFirstChild("Runtime")
+            if scanRoot then
+                scanRoot = scanRoot:FindFirstChild("LootPoints")
+            end
+            if not scanRoot then
+                scanRoot = workspace
+            end
+
+            local promptMap = {}
+            for _, obj in ipairs(scanRoot:GetDescendants()) do
+                if obj:IsA("ProximityPrompt") then
+                    local part = getPromptPartOre(obj)
+                    if part then
+                        promptMap[part] = obj
+                    end
+                end
+            end
+
+            local currentParts = {}
+            for part, prompt in pairs(promptMap) do
+                if not shouldExcludePart(part) then
+                    table.insert(currentParts, part)
+                end
+            end
+
+            for part, data in pairs(oreData) do
+                if not promptMap[part] or shouldExcludePart(part) then
+                    if data.billboard then data.billboard:Destroy() end
+                    if data.anchor then data.anchor:Destroy() end
+                    if data.tpRow then data.tpRow:Destroy() end
+                    oreData[part] = nil
+                    if selectedOre == part then
+                        selectedOre = nil
+                        if not platformOre then
+                            teleportBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+                            returnBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+                        end
+                    end
+                end
+            end
+
+            local char = player.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local playerPos = hrp and hrp.Position or Vector3.new(0, 0, 0)
+
+            local viewRadius = 180
+            local time = tick() * 50
+            
+            local visibleOres = {}
+
+            for _, part in ipairs(currentParts) do
+                local prompt = promptMap[part]
+                if not prompt then continue end
+
+                local qualityLevel = getQualityFromName(part.Name)
+                if qualityLevel == 0 and part.Parent and part.Parent:IsA("Model") then
+                    qualityLevel = getQualityFromName(part.Parent.Name)
+                end
+
+                if not qualityFilters[qualityLevel + 1] then
+                    local data = oreData[part]
+                    if data then
+                        if data.billboard then data.billboard.Enabled = false end
+                        if data.tpRow then data.tpRow.Visible = false end
+                    end
+                    continue
+                end
+
+                local distance = (part.Position - playerPos).Magnitude
+                local isMythic = (qualityLevel == 5)
+
+                if not isMythic and distance > viewRadius then
+                    local data = oreData[part]
+                    if data then
+                        if data.billboard then data.billboard.Enabled = false end
+                        if data.tpRow then data.tpRow.Visible = false end
+                    end
+                    continue
+                end
+
+                local objText = prompt.ObjectText
+                local parsed = parseObjectText(objText)
+                local displayName = parsed and parsed.name or part.Name
+                local weight = parsed and parsed.weight or "N/A"
+                local price = parsed and parsed.price or "N/A"
+
+                local data = oreData[part]
+                if not data then
+                    local anchor = Instance.new("Part")
+                    anchor.Size = Vector3.new(0.1, 0.1, 0.1)
+                    anchor.Transparency = 1
+                    anchor.CanCollide = false
+                    anchor.Anchored = true
+                    anchor.Parent = workspace
+                    anchor.CFrame = part.CFrame + Vector3.new(0, 4, 0)
+
+                    local billboard = Instance.new("BillboardGui")
+                    billboard.Size = UDim2.new(0, 220, 0, 110)
+                    billboard.StudsOffset = Vector3.new(0, 0, 0)
+                    billboard.AlwaysOnTop = true
+                    billboard.MaxDistance = 500
+                    billboard.Parent = anchor
+
+                    local card = createCardUI()
+                    card.frame.Parent = billboard
+
+                    local clickDetector = Instance.new("ClickDetector")
+                    clickDetector.Parent = anchor
+                    clickDetector.MaxActivationDistance = 500
+                    local lastClickTime = 0
+                    clickDetector.MouseClick:Connect(function(playerWhoClicked)
+                        if playerWhoClicked ~= player then return end
+                        local now = tick()
+                        if selectedOre and selectedOre ~= part then
+                            local oldData = oreData[selectedOre]
+                            if oldData and oldData.card then
+                                oldData.card.frame.BackgroundTransparency = 1
+                            end
+                        end
+                        if selectedOre == part then
+                            if (now - lastClickTime) <= oreDoubleClickTimer then
+                                performTeleport()
+                            end
+                        else
+                            selectedOre = part
+                            if data and data.card then
+                                data.card.frame.BackgroundTransparency = 0.65
+                            end
+                            teleportBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+                            returnBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+                            print("选中矿石: " .. displayName)
+                        end
+                        lastClickTime = now
+                    end)
+
+                    local tpRow = Instance.new("Frame")
+                    tpRow.Size = UDim2.new(1, -5, 0, 35)
+                    tpRow.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+                    tpRow.BackgroundTransparency = 0.65
+                    tpRow.ZIndex = 11
+                    tpRow.Parent = tpScroll
+
+                    local tpName = Instance.new("TextLabel")
+                    tpName.Size = UDim2.new(0.65, -5, 1, 0)
+                    tpName.Position = UDim2.new(0, 5, 0, 0)
+                    tpName.BackgroundTransparency = 1
+                    tpName.TextColor3 = Color3.fromRGB(255, 182, 193)
+                    tpName.TextTransparency = 0.65
+                    tpName.TextXAlignment = Enum.TextXAlignment.Left
+                    tpName.Text = displayName .. hs_all
+                    tpName.ZIndex = 12
+                    tpName.Parent = tpRow
+
+                    local tpBtn = Instance.new("TextButton")
+                    tpBtn.Size = UDim2.new(0.3, -5, 0.8, 0)
+                    tpBtn.Position = UDim2.new(0.65, 0, 0.1, 0)
+                    tpBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+                    tpBtn.BackgroundTransparency = 0.65
+                    tpBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+                    tpBtn.TextTransparency = 0.65
+                    tpBtn.Text = "传送" .. hs_all
+                    tpBtn.ZIndex = 12
+                    tpBtn.Parent = tpRow
+
+                    local tpLastClickTime = 0
+                    tpBtn.MouseButton1Click:Connect(function()
+                        local now = tick()
+                        if (now - tpLastClickTime) <= oreDoubleClickTimer then
+                            if selectedOre and selectedOre ~= part then
+                                local oldData = oreData[selectedOre]
+                                if oldData and oldData.card then
+                                    oldData.card.frame.BackgroundTransparency = 1
+                                end
+                            end
+                            selectedOre = part
+                            if data and data.card then
+                                data.card.frame.BackgroundTransparency = 0.65
+                            end
+                            teleportBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+                            returnBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+                            print("从列表选中并传送至: " .. displayName)
+                            performTeleport()
+                        else
+                            if selectedOre and selectedOre ~= part then
+                                local oldData = oreData[selectedOre]
+                                if oldData and oldData.card then
+                                    oldData.card.frame.BackgroundTransparency = 1
+                                end
+                            end
+                            selectedOre = part
+                            if data and data.card then
+                                data.card.frame.BackgroundTransparency = 0.65
+                            end
+                            teleportBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+                            returnBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+                        end
+                        tpLastClickTime = now
+                    end)
+
+                    data = {
+                        billboard = billboard,
+                        anchor = anchor,
+                        card = card,
+                        clickDetector = clickDetector,
+                        tpRow = tpRow,
+                        tpName = tpName,
+                        tpBtn = tpBtn,
+                    }
+                    oreData[part] = data
+                end
+
+                local card = data.card
+                card.nameLabel.Text = displayName
+                card.distLabel.Text = string.format("%.1f m", distance)
+                card.priceLabel.Text = price
+                local qualityName = QUALITY_NAMES[qualityLevel + 1] or "普通"
+                card.qualityLabel.Text = qualityName
+                card.weightLabel.Text = weight
+
+                local currentColor
+                if qualityLevel == 5 then
+                    local hue = (time % 360) / 360
+                    currentColor = Color3.fromHSV(hue, 1, 1)
+                else
+                    currentColor = QUALITY_COLORS[qualityLevel + 1] or Color3.fromRGB(255,182,193)
+                end
+                card.topBar.BackgroundColor3 = currentColor
+                -- 矿石名字和稀有度颜色跟随顶端颜色条
+                card.nameLabel.TextColor3 = currentColor
+                card.qualityLabel.TextColor3 = currentColor
+
+                data.anchor.CFrame = part.CFrame + Vector3.new(0, 4, 0)
+                data.billboard.Enabled = true
+                
+                if data.tpRow then
+                    data.tpRow.Visible = true
+                    data.tpName.Text = displayName .. " [" .. qualityName .. "]"
+                    data.tpName.TextColor3 = currentColor
+                    
+                    data.sortQuality = qualityLevel
+                    data.sortWeight = extractWeightNumber(weight)
+                    table.insert(visibleOres, data)
+                end
+            end
+            
+            table.sort(visibleOres, function(a, b)
+                if a.sortQuality ~= b.sortQuality then
+                    return a.sortQuality > b.sortQuality
+                else
+                    return a.sortWeight > b.sortWeight
+                end
+            end)
+            
+            for index, oreDataEntry in ipairs(visibleOres) do
+                if oreDataEntry.tpRow then
+                    oreDataEntry.tpRow.LayoutOrder = index
+                end
+            end
+        end
+
+        local function startOreView()
+            if oreHeartbeat then return end
+            oreGui.Enabled = true
+            teleportBtn.Visible = true
+            returnBtn.Visible = true
+            teleportBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+            returnBtn.TextColor3 = Color3.new(0.5, 0.5, 0.5)
+            oreHeartbeat = RunService.Heartbeat:Connect(updateOreLabels)
+            print("矿石透视已开启")
+        end
+
+        local function stopOreView()
+            if oreHeartbeat then
+                oreHeartbeat:Disconnect()
+                oreHeartbeat = nil
+            end
+            if platformOre then
+                platformOre:Destroy()
+                platformOre = nil
+            end
+            posStack = {}
+            for part, data in pairs(oreData) do
+                if data.billboard then data.billboard:Destroy() end
+                if data.anchor then data.anchor:Destroy() end
+                if data.tpRow then data.tpRow:Destroy() end
+            end
+            oreData = {}
+            selectedOre = nil
+            teleportBtn.Visible = false
+            returnBtn.Visible = false
+            oreGui.Enabled = false
+            if selling then
+                selling = false
+            end
+            print("矿石透视已关闭")
+        end
+
+        local rowData = {
+            { name = "自动出售", type = "toggle", state = false, action = function(state)
+                sellEnabled = state
+            end },
+            { name = "自动收集", type = "toggle", state = false, action = function(state)
+                if state then startCollect() else stopCollect() end
+            end },
+            { name = "飞升", type = "toggle", state = false, action = function(state)
+                toggleFly(state)
+            end },
+            { name = "矿石透视", type = "toggle", state = false, action = function(state)
+                if state then startOreView() else stopOreView() end
+            end }
+        }
+
+        local function createRow(parent, data, index)
+            local rowHeight = 40
+            local row = Instance.new("Frame")
+            row.Size = UDim2.new(1, -10, 0, rowHeight)
+            row.Position = UDim2.new(0, 5, 0, 5 + (index - 1) * (rowHeight + 5))
+            row.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+            row.BackgroundTransparency = 0.65
+            row.ZIndex = 11
+            row.Parent = parent
+
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(0.6, 0, 1, 0)
+            label.Position = UDim2.new(0, 5, 0, 0)
+            label.Text = data.name .. hs_all
+            label.TextColor3 = Color3.fromRGB(255, 182, 193)
+            label.TextTransparency = 0.65
+            label.BackgroundTransparency = 1
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.ZIndex = 12
+            label.Parent = row
+
+            local rightBtn = Instance.new("TextButton")
+            rightBtn.Size = UDim2.new(0.3, 0, 0.35, 0)
+            rightBtn.Position = UDim2.new(0.65, 0, 0.05, 0)
+            rightBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
+            rightBtn.BackgroundTransparency = 0.65
+            rightBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+            rightBtn.TextTransparency = 0.65
+            rightBtn.ZIndex = 12
+            rightBtn.Parent = row
+
+            if data.type == "button" then
+                rightBtn.Text = "执行" .. hs_all
+                rightBtn.MouseButton1Click:Connect(data.action)
+            elseif data.type == "toggle" then
+                local state = false
+                rightBtn.Text = "关闭" .. hs_all
+                rightBtn.MouseButton1Click:Connect(function()
+                    state = not state
+                    rightBtn.Text = state and ("开启" .. hs_all) or ("关闭" .. hs_all)
+                    data.action(state)
+                end)
+                data.action(false)
+            end
+
+            return row
+        end
+
+        local oreViewRow = nil
+        for i, data in ipairs(rowData) do
+            local row = createRow(scroll, data, i)
+            if data.name == "矿石透视" then
+                oreViewRow = row
+            end
+        end
+
+        local totalHeight = 0
+        for i, data in ipairs(rowData) do
+            totalHeight = totalHeight + 40 + 5
+        end
+
+        if oreViewRow then
+            local subPanel = Instance.new("Frame")
+            subPanel.Size = UDim2.new(1, -10, 0, 60)
+            subPanel.Position = UDim2.new(0, 5, 0, oreViewRow.Position.Y.Offset + 40 + 5)
+            subPanel.BackgroundColor3 = Color3.fromRGB(40,40,40)
+            subPanel.BackgroundTransparency = 0.65
+            subPanel.ZIndex = 11
+            subPanel.Parent = scroll
+
+            local row1 = Instance.new("Frame")
+            row1.Size = UDim2.new(1, 0, 0, 25)
+            row1.Position = UDim2.new(0, 0, 0, 5)
+            row1.BackgroundTransparency = 1
+            row1.Parent = subPanel
+
+            local row2 = Instance.new("Frame")
+            row2.Size = UDim2.new(1, 0, 0, 25)
+            row2.Position = UDim2.new(0, 0, 0, 30)
+            row2.BackgroundTransparency = 1
+            row2.Parent = subPanel
+
+            for q = 0, 5 do
+                local btn = Instance.new("TextButton")
+                btn.Size = UDim2.new(0, 70, 1, -2)
+                btn.BackgroundColor3 = Color3.fromRGB(70,70,70)
+                btn.BackgroundTransparency = 0.65
+                btn.TextColor3 = Color3.fromRGB(255,182,193)
+                btn.TextTransparency = 0.65
+                btn.Text = qualityNames[q+1] .. " 开启" .. hs_all
+                btn.ZIndex = 12
+
+                local parentRow = (q < 3) and row1 or row2
+                local col = q % 3
+                btn.Position = UDim2.new(col * 0.33, 5, 0, 0)
+                btn.Parent = parentRow
+
+                btn:SetAttribute("Quality", q)
+
+                local state = true
+                btn.MouseButton1Click:Connect(function()
+                    state = not state
+                    qualityFilters[q+1] = state
+                    btn.Text = qualityNames[q+1] .. (state and (" 开启" .. hs_all) or (" 关闭" .. hs_all))
+                    btn.BackgroundColor3 = state and Color3.fromRGB(70,70,70) or Color3.fromRGB(120,40,40)
+                end)
+            end
+
+            scroll.CanvasSize = UDim2.new(0, 0, 0, totalHeight + 10 + 65)
+        else
+            scroll.CanvasSize = UDim2.new(0, 0, 0, totalHeight + 10)
+        end
+
+        local function switchTab(tabNum)
+            tab1.Visible = (tabNum == 1)
+            tab2.Visible = (tabNum == 2)
+            tab3.Visible = (tabNum == 3)
+        end
+        btn1.MouseButton1Click:Connect(function() switchTab(1) end)
+        btn2.MouseButton1Click:Connect(function() switchTab(2) end)
+        btn3.MouseButton1Click:Connect(function() switchTab(3) end)
+        switchTab(1)
+
+        -- ============================================================
+        -- 第三层：独立控制按钮 ScreenGui（最高层，不受其他 UI 影响）
+        -- ============================================================
+        local ctrlGui = Instance.new("ScreenGui")
+        ctrlGui.Name = "ToggleCtrl"
+        ctrlGui.DisplayOrder = 9999
+        ctrlGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        ctrlGui.IgnoreGuiInset = true
+        ctrlGui.ResetOnSpawn = false
+        ctrlGui.Parent = playerGui
+
+        local toggleBtn = Instance.new("ImageButton")
+        toggleBtn.Size = UDim2.new(0, 50, 0, 50)
+        toggleBtn.Position = UDim2.new(1, -65, 0.5, -25)
+        toggleBtn.BackgroundTransparency = 1
+        toggleBtn.ZIndex = 1
+        toggleBtn.Parent = ctrlGui
+
+        local refreshBtn = Instance.new("TextButton")
+        refreshBtn.Size = UDim2.new(0, 50, 0, 40)
+        refreshBtn.Position = UDim2.new(1, -65, 0.5, -130)
+        refreshBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+        refreshBtn.BackgroundTransparency = 0.65
+        refreshBtn.TextColor3 = Color3.fromRGB(255, 182, 193)
+        refreshBtn.TextTransparency = 0.65
+        refreshBtn.Text = "刷新" .. hs_all
+        refreshBtn.TextSize = 14
+        refreshBtn.Font = Enum.Font.SourceSansBold
+        refreshBtn.ZIndex = 1
+        refreshBtn.Parent = ctrlGui
+
+        local uiVisible = true
+        toggleBtn.Image = "rbxassetid://74595430581428"
+
+        toggleBtn.MouseButton1Click:Connect(function()
+            uiVisible = not uiVisible
+            mainFrame.Visible = uiVisible
+            animGui.Enabled = uiVisible
+            toggleBtn.Image = uiVisible and "rbxassetid://74595430581428" or "rbxassetid://124965942250140"
+        end)
+
+        refreshBtn.MouseButton1Click:Connect(function()
+            -- 销毁所有 UI 层，重新创建（重新抽取 90%/10%）
+            local old = playerGui:FindFirstChild("AnimBG")
+            if old then old:Destroy() end
+            old = playerGui:FindFirstChild("MyInjectorUI")
+            if old then old:Destroy() end
+            old = playerGui:FindFirstChild("ToggleCtrl")
+            if old then old:Destroy() end
+            print("[刷新] 正在重新创建 UI...")
+            createMainUI()
+        end)
+
+        -- 降低所有按键可见度
+        table.insert(transparencyElements, leftPanel)
+        table.insert(transparencyElements, rightPanel)
+        table.insert(transparencyElements, boardContainer)
+        table.insert(transparencyElements, btn1)
+        table.insert(transparencyElements, btn2)
+        table.insert(transparencyElements, btn3)
+        applyReducedTransparency()
+
+        print("UI 创建完成！")
+        -- 注意：不再调用 initBackground()，动画已在上方通过 task.spawn 启动
+    end)
+
+    if not success then
+        warn("UI 创建失败:", err)
+        print("请按 F9 查看详细错误信息，并将错误内容反馈给开发者。")
+    end
+end
+
+-- ============================================================
+-- 加载动画：自动检测帧数 + BGM（只播放一次，最顶层遮挡一切）
+-- ============================================================
+local function playLoadingAnimation()
+    -- GitHub raw 链接（无302重定向，Roblox可直接下载）
+    -- 首次执行下载所有帧+BGM到本地，之后直接读缓存
+    local LOADING_BASE = "https://raw.githubusercontent.com/sssbbb3ryf/loading/main/"
+    local LOADING_CACHE = "loading_anim_cache"
+    local BGM_FILE = "loading_bgm.mp3"
+    if makefolder then makefolder(LOADING_CACHE) end
+
+    local skipPressed = false
+    local bgmSound = nil
+
+    -- 带超时的 HttpGet（防止卡死）
+    local function httpGetSafe(url, timeoutSec)
+        timeoutSec = timeoutSec or 10
+        local result = nil
+        local done = false
+        task.spawn(function()
+            local ok, data = pcall(function()
+                return game:HttpGet(url)
+            end)
+            if ok then result = data end
+            done = true
+        end)
+        local start = tick()
+        while not done do
+            task.wait(0.1)
+            if (tick() - start) > timeoutSec then
+                done = true
+                break
+            end
+        end
+        return result
+    end
+
+    -- 自动检测仓库里有多少帧（探测到404就停）
+    local function detectFrameCount()
+        -- 先检查本地缓存最多的帧号
+        local maxCached = 0
+        for i = 1000, 1, -1 do
+            local fname = string.format("loading_%04d.jpg", i)
+            if isfile and isfile(LOADING_CACHE .. "/" .. fname) then
+                maxCached = i
+                break
+            end
+        end
+        if maxCached > 0 then
+            local nextFname = string.format("loading_%04d.jpg", maxCached + 1)
+            if not (isfile and isfile(LOADING_CACHE .. "/" .. nextFname)) then
+                return maxCached
+            end
+        end
+        -- 网络探测：从1开始，每50帧跳着检测
+        local lastFound = 0
+        for i = 1, 1000, 50 do
+            local fname = string.format("loading_%04d.jpg", i)
+            local data = httpGetSafe(LOADING_BASE .. fname, 5)
+            if data and #data > 500 then
+                lastFound = i
+            else
+                break
+            end
+        end
+        if lastFound == 0 then return 0 end
+        -- 精扫：从lastFound到lastFound+50逐个检测
+        for i = lastFound + 1, lastFound + 50 do
+            local fname = string.format("loading_%04d.jpg", i)
+            local data = httpGetSafe(LOADING_BASE .. fname, 5)
+            if data and #data > 500 then
+                lastFound = i
+            else
+                break
+            end
+        end
+        return lastFound
+    end
+
+    -- 后台静默准备：检测帧数 → 校验缓存 → 下载缺失帧 → 重试
+    -- 全部就绪后：创建UI → 赋值帧 → GPU预加载 → 立刻播放
+    task.spawn(function()
+        print("[加载] 正在检测仓库帧数...")
+        local LOADING_TOTAL = detectFrameCount()
+        print("[加载] 检测到 " .. LOADING_TOTAL .. " 帧")
+
+        if LOADING_TOTAL == 0 then
+            print("[加载] 未检测到任何帧，跳过加载动画")
+            createMainUI()
+            return
+        end
+
+        -- 校验缓存，清理旧假数据
+        print("[加载] 正在校验缓存...")
+        local validCache = 0
+        local corruptFiles = 0
+        for i = 1, LOADING_TOTAL do
+            local fname = string.format("loading_%04d.jpg", i)
+            local fpath = LOADING_CACHE .. "/" .. fname
+            if isfile and isfile(fpath) then
+                local ok, data = pcall(function() return readfile(fpath) end)
+                if ok and data and #data >= 5000 then
+                    validCache = validCache + 1
+                else
+                    pcall(function() if delfile then delfile(fpath) end end)
+                    corruptFiles = corruptFiles + 1
+                end
+            end
+        end
+        -- 校验BGM缓存
+        local bgmCached = false
+        if isfile and isfile(BGM_FILE) then
+            local ok, data = pcall(function() return readfile(BGM_FILE) end)
+            if ok and data and #data > 10000 then
+                bgmCached = true
+            else
+                pcall(function() if delfile then delfile(BGM_FILE) end end)
+            end
+        end
+        if corruptFiles > 0 then
+            print("[加载] 清理了 " .. corruptFiles .. " 个损坏缓存文件")
+        end
+        print("[加载] 有效缓存: " .. validCache .. "/" .. LOADING_TOTAL)
+
+        -- 收集需要下载的帧（跳过有效缓存）
+        local toDownload = {}
+        for i = 1, LOADING_TOTAL do
+            local fname = string.format("loading_%04d.jpg", i)
+            local fpath = LOADING_CACHE .. "/" .. fname
+            if not (isfile and isfile(fpath)) then
+                toDownload[#toDownload + 1] = i
+            end
+        end
+        print("[加载] 需要下载 " .. #toDownload .. " 帧")
+
+        -- 批量下载（每批3个并发，批间0.3秒防rate limit）
+        local downloaded = 0
+        local dlFailed = 0
+        local BATCH_SIZE = 3
+        local BATCH_DELAY = 0.3
+
+        for batchStart = 1, #toDownload, BATCH_SIZE do
+            local batchDone = 0
+            local batchTotal = math.min(BATCH_SIZE, #toDownload - batchStart + 1)
+            for b = 0, batchTotal - 1 do
+                local idx = batchStart + b
+                local frameNum = toDownload[idx]
+                task.spawn(function()
+                    local fname = string.format("loading_%04d.jpg", frameNum)
+                    local fpath = LOADING_CACHE .. "/" .. fname
+                    local data = httpGetSafe(LOADING_BASE .. fname, 15)
+                    if data and #data >= 5000 then
+                        pcall(function() writefile(fpath, data) end)
+                        downloaded = downloaded + 1
+                    else
+                        dlFailed = dlFailed + 1
+                    end
+                    batchDone = batchDone + 1
+                end)
+            end
+            local waitStart = tick()
+            while batchDone < batchTotal do
+                task.wait(0.1)
+                if (tick() - waitStart) > 20 then break end
+            end
+            if batchStart + BATCH_SIZE <= #toDownload then
+                task.wait(BATCH_DELAY)
+            end
+        end
+        print("[加载] 下载完毕 DL:" .. downloaded .. " FAIL:" .. dlFailed)
+
+        -- 失败重试（最多3轮）
+        local retryRounds = 0
+        while dlFailed > 0 and retryRounds < 3 do
+            retryRounds = retryRounds + 1
+            local retryList = {}
+            for i = 1, LOADING_TOTAL do
+                local fname = string.format("loading_%04d.jpg", i)
+                local fpath = LOADING_CACHE .. "/" .. fname
+                if not (isfile and isfile(fpath)) then
+                    retryList[#retryList + 1] = i
+                end
+            end
+            if #retryList == 0 then break end
+            print("[加载] 重试第" .. retryRounds .. "轮 (" .. #retryList .. "帧)")
+            local retryOk = 0
+            local retryFail = 0
+            for j = 1, #retryList do
+                local frameNum = retryList[j]
+                local fname = string.format("loading_%04d.jpg", frameNum)
+                local fpath = LOADING_CACHE .. "/" .. fname
+                local data = httpGetSafe(LOADING_BASE .. fname, 15)
+                if data and #data >= 5000 then
+                    pcall(function() writefile(fpath, data) end)
+                    retryOk = retryOk + 1
+                else
+                    retryFail = retryFail + 1
+                end
+                task.wait(0.3)
+            end
+            dlFailed = retryFail
+            print("[加载] 重试完成 成功:" .. retryOk .. " 失败:" .. retryFail)
+        end
+
+        -- 下载BGM（如果还没缓存）
+        if not bgmCached then
+            print("[加载] 下载BGM...")
+            local data = httpGetSafe(LOADING_BASE .. "loading_bgm.mp3", 30)
+            if data and #data > 10000 then
+                writefile(BGM_FILE, data)
+                bgmCached = true
+                print("[加载] BGM下载成功")
+            else
+                print("[加载] BGM下载失败")
+            end
+        end
+
+        -- 统计就绪帧数
+        local readyCount = 0
+        for i = 1, LOADING_TOTAL do
+            local fname = string.format("loading_%04d.jpg", i)
+            local fpath = LOADING_CACHE .. "/" .. fname
+            if isfile and isfile(fpath) then
+                readyCount = readyCount + 1
+            end
+        end
+        print("[加载] 就绪: " .. readyCount .. "/" .. LOADING_TOTAL)
+
+        if readyCount == 0 then
+            print("[加载] 没有任何可用帧，跳过动画")
+            createMainUI()
+            return
+        end
+
+        -- ========================================================
+        -- 全部准备完毕！现在才创建UI，立刻显示动画
+        -- ========================================================
+        print("[加载] 全部就绪，创建UI并播放动画")
+
+        starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+        pcall(function() starterGui:SetCore("TopbarEnabled", false) end)
+
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "LoadingAnimation"
+        screenGui.ResetOnSpawn = false
+        screenGui.IgnoreGuiInset = true
+        screenGui.DisplayOrder = 99999
+        screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        -- 放到CoreGui里，优先级高于PlayerGui，能挡住退出按钮等
+        local ok, err = pcall(function()
+            screenGui.Parent = game:GetService("CoreGui")
+        end)
+        if not ok then
+            screenGui.Parent = playerGui
+        end
+
+        -- 黑色底板（挡住游戏画面）
+        local bgFrame = Instance.new("Frame")
+        bgFrame.Name = "BlackBG"
+        bgFrame.Size = UDim2.new(1, 0, 1, 0)
+        bgFrame.Position = UDim2.new(0, 0, 0, 0)
+        bgFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        bgFrame.BackgroundTransparency = 0
+        bgFrame.ZIndex = 0
+        bgFrame.Parent = screenGui
+
+        -- 创建 ImageLabel 并立即赋值缓存图片
+        local frames = {}
+        for i = 1, LOADING_TOTAL do
+            local lbl = Instance.new("ImageLabel")
+            lbl.Name = "LoadF" .. i
+            lbl.Size = UDim2.new(1, 0, 1, 0)
+            lbl.Position = UDim2.new(0, 0, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.ImageTransparency = 1
+            lbl.ZIndex = 5
+            lbl.ScaleType = Enum.ScaleType.Stretch
+            -- 立即从缓存赋值
+            local fname = string.format("loading_%04d.jpg", i)
+            local fpath = LOADING_CACHE .. "/" .. fname
+            if isfile and isfile(fpath) and getcustomasset then
+                lbl.Image = getcustomasset(fpath)
+            end
+            lbl.Parent = screenGui
+            frames[i] = lbl
+        end
+
+        -- 立刻显示第一帧
+        frames[1].ImageTransparency = 0
+
+        -- 跳过按钮
+        local skipBtn = Instance.new("TextButton")
+        skipBtn.Size = UDim2.new(0, 100, 0, 40)
+        skipBtn.Position = UDim2.new(1, -120, 1, -60)
+        skipBtn.AnchorPoint = Vector2.new(1, 1)
+        skipBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        skipBtn.BackgroundTransparency = 0.5
+        skipBtn.Text = "跳过"
+        skipBtn.TextColor3 = Color3.new(1, 1, 1)
+        skipBtn.TextSize = 20
+        skipBtn.Font = Enum.Font.SourceSansBold
+        skipBtn.ZIndex = 100
+        skipBtn.Parent = screenGui
+
+        -- 停止 BGM 并清理
+        local function finishLoading()
+            if skipPressed then return end
+            skipPressed = true
+            if bgmSound then
+                bgmSound:Stop()
+                bgmSound:Destroy()
+                bgmSound = nil
+            end
+            starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
+            pcall(function() starterGui:SetCore("TopbarEnabled", true) end)
+            if screenGui then
+                screenGui:Destroy()
+            end
+            print("加载动画完毕，开始创建主 UI")
+            createMainUI()
+        end
+
+        skipBtn.MouseButton1Click:Connect(function()
+            if skipPressed then return end
+            finishLoading()
+        end)
+
+        -- 播放BGM
+        pcall(function()
+            if isfile and isfile(BGM_FILE) then
+                local assetUrl = getcustomasset(BGM_FILE)
+                if assetUrl then
+                    bgmSound = Instance.new("Sound")
+                    bgmSound.SoundId = assetUrl
+                    bgmSound.Volume = 0.5
+                    bgmSound.Looped = false
+                    bgmSound.Parent = workspace
+                    bgmSound:Play()
+                    print("[加载] BGM 已开始播放")
+                end
+            end
+        end)
+
+        -- GPU预加载
+        print("[加载] GPU 预加载...")
+        pcall(function()
+            local ContentProvider = game:GetService("ContentProvider")
+            ContentProvider:PreloadAsync(frames)
+        end)
+        print("[加载] 开始播放动画（一次）...")
+
+        -- 播放：只切换透明度，30fps，播放一次后淡出
+        local cur = 1
+        local lastSwitch = 0
+        local FPS = 30
+        local interval = 1 / FPS
+        local finished = false
+
+        local animConn
+        animConn = RunService.RenderStepped:Connect(function()
+            if skipPressed or not screenGui or not screenGui.Parent then
+                if animConn then animConn:Disconnect() end
+                return
+            end
+            if finished then return end
+            local now = tick()
+            if now - lastSwitch >= interval then
+                lastSwitch = now
+                frames[cur].ImageTransparency = 1
+                cur = cur + 1
+                if cur > LOADING_TOTAL then
+                    finished = true
+                    if animConn then animConn:Disconnect() end
+                    local fadeTime = 1.5
+                    local fadeInfo = TweenInfo.new(fadeTime, Enum.EasingStyle.Linear)
+                    for _, lbl in ipairs(frames) do
+                        pcall(function()
+                            TweenService:Create(lbl, fadeInfo, {ImageTransparency = 1}):Play()
+                        end)
+                    end
+                    task.wait(fadeTime)
+                    if not skipPressed then finishLoading() end
+                    return
+                end
+                frames[cur].ImageTransparency = 0
+            end
+        end)
+    end)
+end
+
+-- 启动加载动画
+playLoadingAnimation()
