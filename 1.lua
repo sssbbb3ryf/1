@@ -1,1172 +1,546 @@
-repeat
-	task.wait()
-until game:IsLoaded()
-local library = {}
-local ToggleUI = false
-library.currentTab = nil
-library.flags = {}
-local services = setmetatable({}, {
-	__index = function(t, k)
-		return game.GetService(game, k)
-	end,
-})
-local mouse = services.Players.LocalPlayer:GetMouse()
-function Tween(obj, t, data)
-	services.TweenService
-		:Create(obj, TweenInfo.new(t[1], Enum.EasingStyle[t[2]], Enum.EasingDirection[t[3]]), data)
-		:Play()
-	return true
+-- ============================================================
+-- 预下载脚本：一次性下载所有动画资源到本地缓存
+-- 适用：PC端 和 手机端（需要执行器支持 writefile/readfile）
+-- 使用方法：在游戏中执行此脚本，等待下载完成后即可使用主脚本
+-- 注意：首次运行需要下载约270+152帧+BGM，耗时约2-5分钟
+-- ============================================================
+
+print("============================================")
+print("   动画资源预下载脚本")
+print("   适用平台：PC / 手机（需支持文件系统）")
+print("============================================")
+
+-- 检测文件系统支持
+if not (isfile and readfile and writefile and getcustomasset) then
+    warn("[错误] 当前执行器不支持文件系统！")
+    warn("[错误] 请更换支持 writefile/readfile 的执行器（如 Delta、Arceus X 等）")
+    return
 end
-function Ripple(obj)
-	spawn(function()
-		if obj.ClipsDescendants ~= true then
-			obj.ClipsDescendants = true
-		end
-		local Ripple = Instance.new("ImageLabel")
-		Ripple.Name = "Ripple"
-		Ripple.Parent = obj
-		Ripple.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		Ripple.BackgroundTransparency = 1.000
-		Ripple.ZIndex = 8
-		Ripple.Image = "rbxassetid://102344361835609" -- 使用指定ID
-		Ripple.ImageTransparency = 0.800
-		Ripple.ScaleType = Enum.ScaleType.Fit
-		Ripple.ImageColor3 = Color3.fromRGB(255, 255, 255)
-		Ripple.Position = UDim2.new(
-			(mouse.X - Ripple.AbsolutePosition.X) / obj.AbsoluteSize.X,
-			0,
-			(mouse.Y - Ripple.AbsolutePosition.Y) / obj.AbsoluteSize.Y,
-			0
-		)
-		Tween(
-			Ripple,
-			{ 0.3, "Linear", "InOut" },
-			{ Position = UDim2.new(-5.5, 0, -5.5, 0), Size = UDim2.new(12, 0, 12, 0) }
-		)
-		wait(0.15)
-		Tween(Ripple, { 0.3, "Linear", "InOut" }, { ImageTransparency = 1 })
-		wait(0.3)
-		Ripple:Destroy()
-	end)
+
+-- ============================================================
+-- 配置
+-- ============================================================
+local LOADING_BASE = "https://raw.githubusercontent.com/sssbbb3ryf/loading/main/"
+local LOADING_CACHE = "loading_anim_cache"
+
+local ANIM_BASE = "https://gitee.com/xsadad_0/roxy/raw/main/"
+local ANIM_CACHE = "anim_bg_cache"
+
+local NORMAL_URL = "https://raw.githubusercontent.com/sssbbb3ryf/h-h-h/main/bg.jpg"
+local NORMAL_FILE = "normal_ui_bg_v2.jpg"
+
+local BGM_FILE = "loading_bgm.mp3"
+
+-- 创建缓存目录
+if makefolder then
+    makefolder(LOADING_CACHE)
+    makefolder(ANIM_CACHE)
 end
-local toggled = false
-local switchingTabs = false
-function switchTab(new)
-	if switchingTabs then
-		return
-	end
-	local old = library.currentTab
-	if old == nil then
-		new[2].Visible = true
-		library.currentTab = new
-		services.TweenService:Create(new[1], TweenInfo.new(0.1), { ImageTransparency = 0 }):Play()
-		services.TweenService:Create(new[1].TabText, TweenInfo.new(0.1), { TextTransparency = 0 }):Play()
-		return
-	end
-	if old[1] == new[1] then
-		return
-	end
-	switchingTabs = true
-	library.currentTab = new
-	services.TweenService:Create(old[1], TweenInfo.new(0.1), { ImageTransparency = 0.2 }):Play()
-	services.TweenService:Create(new[1], TweenInfo.new(0.1), { ImageTransparency = 0 }):Play()
-	services.TweenService:Create(old[1].TabText, TweenInfo.new(0.1), { TextTransparency = 0.2 }):Play()
-	services.TweenService:Create(new[1].TabText, TweenInfo.new(0.1), { TextTransparency = 0 }):Play()
-	old[2].Visible = false
-	new[2].Visible = true
-	task.wait(0.1)
-	switchingTabs = false
+
+-- ============================================================
+-- 带超时的 HttpGet
+-- ============================================================
+local function httpGetSafe(url, timeoutSec)
+    timeoutSec = timeoutSec or 15
+    local result = nil
+    local done = false
+    task.spawn(function()
+        local ok, data = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok then result = data end
+        done = true
+    end)
+    local start = tick()
+    while not done do
+        task.wait(0.1)
+        if (tick() - start) > timeoutSec then
+            done = true
+            break
+        end
+    end
+    return result
 end
-function drag(frame, hold)
-	if not hold then
-		hold = frame
-	end
-	local dragging
-	local dragInput
-	local dragStart
-	local startPos
-	local function update(input)
-		local delta = input.Position - dragStart
-		frame.Position =
-			UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-	end
-	hold.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			dragging = true
-			dragStart = input.Position
-			startPos = frame.Position
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then
-					dragging = false
-				end
-			end)
-		end
-	end)
-	frame.InputChanged:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseMovement then
-			dragInput = input
-		end
-	end)
-	services.UserInputService.InputChanged:Connect(function(input)
-		if input == dragInput and dragging then
-			update(input)
-		end
-	end)
+
+-- ============================================================
+-- 自动检测加载动画帧数（GitHub 仓库）
+-- ============================================================
+local function detectLoadingFrames()
+    print("[检测] 正在探测加载动画帧数...")
+    -- 粗扫：每50帧跳着检测
+    local lastFound = 0
+    for i = 1, 1000, 50 do
+        local fname = string.format("loading_%04d.jpg", i)
+        local data = httpGetSafe(LOADING_BASE .. fname, 5)
+        if data and #data > 500 then
+            lastFound = i
+        else
+            break
+        end
+    end
+    if lastFound == 0 then return 0 end
+    -- 精扫
+    for i = lastFound + 1, lastFound + 50 do
+        local fname = string.format("loading_%04d.jpg", i)
+        local data = httpGetSafe(LOADING_BASE .. fname, 5)
+        if data and #data > 500 then
+            lastFound = i
+        else
+            break
+        end
+    end
+    return lastFound
 end
-function library.new(library, name, theme)
-	for _, v in next, services.CoreGui:GetChildren() do
-		if v.Name == "REN" then
-			v:Destroy()
-		end
-	end
--------------------------GHOST TEAM------------------------------
-local config = {
-    MainColor = Color3.fromRGB(255, 105, 180),  -- 粉色
-    TabColor = Color3.fromRGB(255, 182, 193),   -- 浅粉色
-    Bg_Color = Color3.fromRGB(255, 192, 203),   -- 粉红色
-    Zy_Color = Color3.fromRGB(255, 182, 193),   -- 浅粉色
-    
-    Button_Color = Color3.fromRGB(255, 192, 203),
-    Textbox_Color = Color3.fromRGB(255, 182, 193),
-    Dropdown_Color = Color3.fromRGB(255, 192, 203),
-    Keybind_Color = Color3.fromRGB(255, 182, 193),
-    Label_Color = Color3.fromRGB(255, 192, 203),
-    
-    Slider_Color = Color3.fromRGB(255, 182, 193),
-    SliderBar_Color = Color3.fromRGB(255, 105, 180),  -- 粉色
-    
-    Toggle_Color = Color3.fromRGB(255, 182, 193),
-    Toggle_Off = Color3.fromRGB(220, 180, 200),       -- 浅紫色
-    Toggle_On = Color3.fromRGB(255, 105, 180),        -- 粉色
-}
--------------------------GHOST TEAM------------------------------
-	local YI = Instance.new("ScreenGui")
-	local Main = Instance.new("Frame")
-	local Background = Instance.new("ImageLabel") -- 添加背景图片
-	local TabMain = Instance.new("Frame")
-	local MainC = Instance.new("UICorner")
-	local SB = Instance.new("Frame")
-	local SBC = Instance.new("UICorner")
-	local Side = Instance.new("Frame")
-	local SideG = Instance.new("UIGradient")
-	local TabBtns = Instance.new("ScrollingFrame")
-	local TabBtnsL = Instance.new("UIListLayout")
-	local ScriptTitle = Instance.new("TextLabel")
-	local SBG = Instance.new("UIGradient")
-	local DropShadowHolder = Instance.new("Frame")
-	local DropShadow = Instance.new("ImageLabel")
-	local UICornerMain = Instance.new("UICorner")
-	local UIGradient = Instance.new("UIGradient")
-	local UIGradientTitle = Instance.new("UIGradient")
 
-	if syn and syn.protect_gui then
-		syn.protect_gui(YI)
-	end
-	YI.Name = "REN"
-	YI.Parent = services.CoreGui
-	function UiDestroy()
-		YI:Destroy()
-	end
-	function ToggleUILib()
-		if not ToggleUI then
-			YI.Enabled = false
-			ToggleUI = true
-		else
-			ToggleUI = false
-			YI.Enabled = true
-		end
-	end
-	Main.Name = "Main"
-	Main.Parent = YI
-	Main.AnchorPoint = Vector2.new(0.5, 0.5)
-	Main.BackgroundColor3 = Color3.new(0, 0, 0)
-	Main.BackgroundTransparency = 1  -- 设置主背景透明
-	Main.BorderSizePixel = 0
-	Main.Position = UDim2.new(0.5, 0, 0.5, 0)
-	Main.Size = UDim2.new(0, 572, 0, 353)
-	Main.ZIndex = 1
-	Main.Active = true
-	Main.Draggable = true
-	
-	-- 添加背景图片
-	Background.Name = "Background"
-	Background.Parent = Main
-	Background.BackgroundTransparency = 1
-	Background.Size = UDim2.new(1, 0, 1, 0)
-	Background.Position = UDim2.new(0, 0, 0, 0)
-	Background.Image = "rbxassetid://102344361835609" -- 使用指定ID
-	Background.ZIndex = 0
-	Background.ScaleType = Enum.ScaleType.Crop  -- 裁剪模式
-
-	services.UserInputService.InputEnded:Connect(function(input)
-		if input.KeyCode == Enum.KeyCode.LeftControl then
-			Main.Visible = not Main.Visible
-		end
-	end)
-
-	local Open = Instance.new("ImageButton")
-	local UICorner = Instance.new("UICorner")
-
-	Open.Name = "Open"
-	Open.Parent = YI
-	Open.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	Open.BackgroundTransparency = 1
-	Open.Position = UDim2.new(0.00829315186, 0, 0.13107837, 0)
-	Open.Size = UDim2.new(0, 50, 0, 50)
-	Open.Active = true
-	Open.Draggable = true
-	Open.Image = "rbxassetid://102344361835609" -- 使用指定ID
-	Open.ImageTransparency = 0 -- 不透明
-	
-	Open.MouseButton1Click:Connect(function()
-		Main.Visible = not Main.Visible
-	end)
-
-	UICorner.Parent = Open
-
-	drag(Main)
-	UICornerMain.Parent = Main
-	UICornerMain.CornerRadius = UDim.new(0, 3)
-	DropShadowHolder.Name = "DropShadowHolder"
-	DropShadowHolder.Parent = Main
-	DropShadowHolder.BackgroundTransparency = 1.000
-	DropShadowHolder.BorderSizePixel = 0
-	DropShadowHolder.Size = UDim2.new(1, 0, 1, 0)
-	DropShadowHolder.BorderColor3 = Color3.fromRGB(255, 255, 255)
-	DropShadowHolder.ZIndex = 0
-
-	function toggleui()
-		toggled = not toggled
-		spawn(function()
-			if toggled then
-				wait(0.3)
-			end
-		end)
-		Tween(Main, { 0.3, "Sine", "InOut" }, { Size = UDim2.new(0, 609, 0, (toggled and 505 or 0)) })
-	end
-	TabMain.Name = "TabMain"
-	TabMain.Parent = Main
-	TabMain.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	TabMain.BackgroundTransparency = 1.000 -- 完全透明
-	TabMain.Position = UDim2.new(0.217000037, 0, 0, 3)
-	TabMain.Size = UDim2.new(0, 448, 0, 350)
-	MainC.CornerRadius = UDim.new(0, 5.5)
-	MainC.Name = "MainC"
-	MainC.Parent = TabMain
-	SB.Name = "SB"
-	SB.Parent = Main
-	SB.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	SB.BorderColor3 = config.MainColor
-	SB.Size = UDim2.new(0, 8, 0, 353)
-	SB.BackgroundTransparency = 1 -- 透明
-	SBC.CornerRadius = UDim.new(0, 6)
-	SBC.Name = "SBC"
-	SBC.Parent = SB
-	Side.Name = "Side"
-	Side.Parent = SB
-	Side.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	Side.BorderColor3 = Color3.fromRGB(255, 255, 255)
-	Side.BorderSizePixel = 0
-	Side.ClipsDescendants = true
-	Side.Position = UDim2.new(1, 0, 0, 0)
-	Side.Size = UDim2.new(0, 110, 0, 353)
-	Side.BackgroundTransparency = 1.0 -- 透明
-	SideG.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0.00, config.Zy_Color), 
-    ColorSequenceKeypoint.new(1.00, config.Zy_Color)
-})
-	SideG.Rotation = 90
-	SideG.Name = "SideG"
-	SideG.Parent = Side
-	TabBtns.Name = "TabBtns"
-	TabBtns.Parent = Side
-	TabBtns.Active = true
-	TabBtns.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	TabBtns.BackgroundTransparency = 1.000 -- 完全透明
-	TabBtns.BorderSizePixel = 0
-	TabBtns.Position = UDim2.new(0, 0, 0.0973535776, 0)
-	TabBtns.Size = UDim2.new(0, 110, 0, 318)
-	TabBtns.CanvasSize = UDim2.new(0, 0, 1, 0)
-	TabBtns.ScrollBarThickness = 0
-	TabBtnsL.Name = "TabBtnsL"
-	TabBtnsL.Parent = TabBtns
-	TabBtnsL.SortOrder = Enum.SortOrder.LayoutOrder
-	TabBtnsL.Padding = UDim.new(0, 12)
-	ScriptTitle.Name = "ScriptTitle"
-	ScriptTitle.Parent = Side
-	ScriptTitle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-	ScriptTitle.BackgroundTransparency = 1.000 -- 完全透明
-	ScriptTitle.Position = UDim2.new(0, 0, 0.00953488424, 0)
-	ScriptTitle.Size = UDim2.new(0, 102, 0, 20)
-	ScriptTitle.Font = Enum.Font.GothamSemibold
-	ScriptTitle.Text = name
-	ScriptTitle.TextColor3 = Color3.fromRGB(255, 105, 180) -- 文字保持不透明
-	ScriptTitle.TextSize = 14.000
-	ScriptTitle.TextScaled = true
-	ScriptTitle.TextXAlignment = Enum.TextXAlignment.Left
-
-	SBG.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0.00, config.Zy_Color), 
-    ColorSequenceKeypoint.new(1.00, config.Zy_Color)
-})
-	SBG.Rotation = 90
-	SBG.Name = "SBG"
-	SBG.Parent = SB
-	TabBtnsL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-		TabBtns.CanvasSize = UDim2.new(0, 0, 0, TabBtnsL.AbsoluteContentSize.Y + 18)
-	end)
-
-	local window = {}
-	function window.Tab(window, name, icon)
-		local Tab = Instance.new("ScrollingFrame")
-		local TabIco = Instance.new("ImageLabel")
-		local TabText = Instance.new("TextLabel")
-		local TabBtn = Instance.new("TextButton")
-		local TabL = Instance.new("UIListLayout")
-		Tab.Name = "Tab"
-		Tab.Parent = TabMain
-		Tab.Active = true
-		Tab.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		Tab.BackgroundTransparency = 1.000 -- 完全透明
-		Tab.Size = UDim2.new(1, 0, 1, 0)
-		Tab.ScrollBarThickness = 2
-		Tab.Visible = false
-		TabIco.Name = "TabIco"
-		TabIco.Parent = TabBtns
-		TabIco.BackgroundTransparency = 1.000
-		TabIco.BorderSizePixel = 0
-		TabIco.Size = UDim2.new(0, 24, 0, 24)
-		TabIco.Image = ("rbxassetid://%s"):format((icon or 4370341699))
-		TabIco.ImageTransparency = 0 -- 不透明
-		TabText.Name = "TabText"
-		TabText.Parent = TabIco
-		TabText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		TabText.BackgroundTransparency = 1.000 -- 完全透明
-		TabText.Position = UDim2.new(1.41666663, 0, 0, 0)
-		TabText.Size = UDim2.new(0, 76, 0, 24)
-		TabText.Font = Enum.Font.GothamSemibold
-		TabText.Text = name
-		TabText.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-		TabText.TextSize = 14.000
-		TabText.TextXAlignment = Enum.TextXAlignment.Left
-		TabText.TextTransparency = 0.2
-		TabBtn.Name = "TabBtn"
-		TabBtn.Parent = TabIco
-		TabBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-		TabBtn.BackgroundTransparency = 1.000 -- 完全透明
-		TabBtn.BorderSizePixel = 0
-		TabBtn.Size = UDim2.new(0, 110, 0, 24)
-		TabBtn.AutoButtonColor = false
-		TabBtn.Font = Enum.Font.SourceSans
-		TabBtn.Text = ""
-		TabBtn.TextColor3 = Color3.fromRGB(0, 0, 0)
-		TabBtn.TextSize = 14.000
-		TabL.Name = "TabL"
-		TabL.Parent = Tab
-		TabL.SortOrder = Enum.SortOrder.LayoutOrder
-		TabL.Padding = UDim.new(0, 4)
-		TabBtn.MouseButton1Click:Connect(function()
-			spawn(function()
-				Ripple(TabBtn)
-			end)
-			switchTab({ TabIco, Tab })
-		end)
-		if library.currentTab == nil then
-			switchTab({ TabIco, Tab })
-		end
-		TabL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-			Tab.CanvasSize = UDim2.new(0, 0, 0, TabL.AbsoluteContentSize.Y + 8)
-		end)
-		local tab = {}
-		function tab.section(tab, name, TabVal)
-			local Section = Instance.new("Frame")
-			local SectionC = Instance.new("UICorner")
-			local SectionText = Instance.new("TextLabel")
-			local SectionOpen = Instance.new("ImageLabel")
-			local SectionOpened = Instance.new("ImageLabel")
-			local SectionToggle = Instance.new("ImageButton")
-			local Objs = Instance.new("Frame")
-			local ObjsL = Instance.new("UIListLayout")
-			Section.Name = "Section"
-			Section.Parent = Tab
-			Section.BackgroundColor3 = config.TabColor
-			Section.BackgroundTransparency = 1.000 -- 完全透明
-			Section.BorderSizePixel = 0
-			Section.ClipsDescendants = true
-			Section.Size = UDim2.new(0.981000006, 0, 0, 36)
-			SectionC.CornerRadius = UDim.new(0, 6)
-			SectionC.Name = "SectionC"
-			SectionC.Parent = Section
-			SectionText.Name = "SectionText"
-			SectionText.Parent = Section
-			SectionText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-			SectionText.BackgroundTransparency = 1.000 -- 完全透明
-			SectionText.Position = UDim2.new(0.0887396261, 0, 0, 0)
-			SectionText.Size = UDim2.new(0, 401, 0, 36)
-			SectionText.Font = Enum.Font.GothamSemibold
-			SectionText.Text = name
-			SectionText.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-			SectionText.TextSize = 16.000
-			SectionText.TextXAlignment = Enum.TextXAlignment.Left
-			SectionOpen.Name = "SectionOpen"
-			SectionOpen.Parent = SectionText
-			SectionOpen.BackgroundTransparency = 1
-			SectionOpen.BorderSizePixel = 0
-			SectionOpen.Position = UDim2.new(0, -33, 0, 5)
-			SectionOpen.Size = UDim2.new(0, 26, 0, 26)
-			SectionOpen.Image = "http://www.roblox.com/asset/?id=6031302934"
-			SectionOpen.ImageTransparency = 0 -- 不透明
-			SectionOpened.Name = "SectionOpened"
-			SectionOpened.Parent = SectionOpen
-			SectionOpened.BackgroundTransparency = 1.000
-			SectionOpened.BorderSizePixel = 0
-			SectionOpened.Size = UDim2.new(0, 26, 0, 26)
-			SectionOpened.Image = "http://www.roblox.com/asset/?id=6031302932"
-			SectionOpened.ImageTransparency = 1.000
-			SectionToggle.Name = "SectionToggle"
-			SectionToggle.Parent = SectionOpen
-			SectionToggle.BackgroundTransparency = 1
-			SectionToggle.BorderSizePixel = 0
-			SectionToggle.Size = UDim2.new(0, 26, 0, 26)
-			Objs.Name = "Objs"
-			Objs.Parent = Section
-			Objs.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-			Objs.BackgroundTransparency = 1 -- 完全透明
-			Objs.BorderSizePixel = 0
-			Objs.Position = UDim2.new(0, 6, 0, 36)
-			Objs.Size = UDim2.new(0.986347735, 0, 0, 0)
-			ObjsL.Name = "ObjsL"
-			ObjsL.Parent = Objs
-			ObjsL.SortOrder = Enum.SortOrder.LayoutOrder
-			ObjsL.Padding = UDim.new(0, 8)
-			local open = TabVal
-			if TabVal ~= false then
-				Section.Size = UDim2.new(0.981000006, 0, 0, open and 36 + ObjsL.AbsoluteContentSize.Y + 8 or 36)
-				SectionOpened.ImageTransparency = (open and 0 or 1)
-				SectionOpen.ImageTransparency = (open and 1 or 0)
-			end
-			SectionToggle.MouseButton1Click:Connect(function()
-				open = not open
-				Section.Size = UDim2.new(0.981000006, 0, 0, open and 36 + ObjsL.AbsoluteContentSize.Y + 8 or 36)
-				SectionOpened.ImageTransparency = (open and 0 or 1)
-				SectionOpen.ImageTransparency = (open and 1 or 0)
-			end)
-			ObjsL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-				if not open then
-					return
-				end
-				Section.Size = UDim2.new(0.981000006, 0, 0, 36 + ObjsL.AbsoluteContentSize.Y + 8)
-			end)
-			local section = {}
-			function section.Button(section, text, callback)
-				local callback = callback or function() end
-				local BtnModule = Instance.new("Frame")
-				local Btn = Instance.new("TextButton")
-				local BtnC = Instance.new("UICorner")
-				BtnModule.Name = "BtnModule"
-				BtnModule.Parent = Objs
-				BtnModule.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				BtnModule.BackgroundTransparency = 1.000 -- 完全透明
-				BtnModule.BorderSizePixel = 0
-				BtnModule.Position = UDim2.new(0, 0, 0, 0)
-				BtnModule.Size = UDim2.new(0, 428, 0, 38)
-				Btn.Name = "Btn"
-				Btn.Parent = BtnModule
-				Btn.BackgroundColor3 = config.Button_Color
-				Btn.BackgroundTransparency = 0.5 -- 半透明
-				Btn.BorderSizePixel = 0
-				Btn.Size = UDim2.new(0, 428, 0, 38)
-				Btn.AutoButtonColor = false
-				Btn.Font = Enum.Font.GothamSemibold
-				Btn.Text = "   " .. text
-				Btn.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				Btn.TextSize = 16.000
-				Btn.TextXAlignment = Enum.TextXAlignment.Left
-				BtnC.CornerRadius = UDim.new(0, 6)
-				BtnC.Name = "BtnC"
-				BtnC.Parent = Btn
-				Btn.MouseButton1Click:Connect(function()
-					spawn(function()
-						Ripple(Btn)
-					end)
-					spawn(callback)
-				end)
-			end
-			function section:Label(text)
-				local LabelModule = Instance.new("Frame")
-				local TextLabel = Instance.new("TextLabel")
-				local LabelC = Instance.new("UICorner")
-				LabelModule.Name = "LabelModule"
-				LabelModule.Parent = Objs
-				LabelModule.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				LabelModule.BackgroundTransparency = 1.000 -- 完全透明
-				LabelModule.BorderSizePixel = 0
-				LabelModule.Position = UDim2.new(0, 0, NAN, 0)
-				LabelModule.Size = UDim2.new(0, 428, 0, 19)
-				TextLabel.Parent = LabelModule
-				TextLabel.BackgroundColor3 = config.Label_Color
-				TextLabel.BackgroundTransparency = 0.5 -- 半透明
-				TextLabel.Size = UDim2.new(0, 428, 0, 22)
-				TextLabel.Font = Enum.Font.GothamSemibold
-				TextLabel.Text = text
-				TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				TextLabel.TextSize = 14.000
-				LabelC.CornerRadius = UDim.new(0, 6)
-				LabelC.Name = "LabelC"
-				LabelC.Parent = TextLabel
-				return TextLabel
-			end
-			function section.Toggle(section, text, flag, enabled, callback)
-				local callback = callback or function() end
-				local enabled = enabled or false
-				assert(text, "No text provided")
-				assert(flag, "No flag provided")
-				library.flags[flag] = enabled
-
-				local ToggleModule = Instance.new("Frame")
-				local ToggleBtn = Instance.new("TextButton")
-				local ToggleBtnC = Instance.new("UICorner")
-				local ToggleDisable = Instance.new("Frame")
-				local ToggleSwitch = Instance.new("Frame")
-				local ToggleSwitchC = Instance.new("UICorner")
-				local ToggleDisableC = Instance.new("UICorner")
-				ToggleModule.Name = "ToggleModule"
-				ToggleModule.Parent = Objs
-				ToggleModule.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				ToggleModule.BackgroundTransparency = 1.000 -- 完全透明
-				ToggleModule.BorderSizePixel = 0
-				ToggleModule.Position = UDim2.new(0, 0, 0, 0)
-				ToggleModule.Size = UDim2.new(0, 428, 0, 38)
-				ToggleBtn.Name = "ToggleBtn"
-				ToggleBtn.Parent = ToggleModule
-				ToggleBtn.BackgroundColor3 = config.Toggle_Color
-				ToggleBtn.BackgroundTransparency = 0.5 -- 半透明
-				ToggleBtn.BorderSizePixel = 0
-				ToggleBtn.Size = UDim2.new(0, 428, 0, 38)
-				ToggleBtn.AutoButtonColor = false
-				ToggleBtn.Font = Enum.Font.GothamSemibold
-				ToggleBtn.Text = "   " .. text
-				ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				ToggleBtn.TextSize = 16.000
-				ToggleBtn.TextXAlignment = Enum.TextXAlignment.Left
-				ToggleBtnC.CornerRadius = UDim.new(0, 6)
-				ToggleBtnC.Name = "ToggleBtnC"
-				ToggleBtnC.Parent = ToggleBtn
-				ToggleDisable.Name = "ToggleDisable"
-				ToggleDisable.Parent = ToggleBtn
-				ToggleDisable.BackgroundColor3 = config.Bg_Color
-				ToggleDisable.BackgroundTransparency = 0.5 -- 半透明
-				ToggleDisable.BorderSizePixel = 0
-				ToggleDisable.Position = UDim2.new(0.901869178, 0, 0.208881587, 0)
-				ToggleDisable.Size = UDim2.new(0, 36, 0, 22)
-				ToggleSwitch.Name = "ToggleSwitch"
-				ToggleSwitch.Parent = ToggleDisable
-				ToggleSwitch.BackgroundColor3 = config.Toggle_Off
-				ToggleSwitch.BackgroundTransparency = 0.5 -- 半透明
-				ToggleSwitch.Size = UDim2.new(0, 24, 0, 22)
-				ToggleSwitchC.CornerRadius = UDim.new(0, 6)
-				ToggleSwitchC.Name = "ToggleSwitchC"
-				ToggleSwitchC.Parent = ToggleSwitch
-				ToggleDisableC.CornerRadius = UDim.new(0, 6)
-				ToggleDisableC.Name = "ToggleDisableC"
-				ToggleDisableC.Parent = ToggleDisable
-				local funcs = {
-					SetState = function(self, state)
-						if state == nil then
-							state = not library.flags[flag]
-						end
-						if library.flags[flag] == state then
-							return
-						end
-						services.TweenService
-							:Create(ToggleSwitch, TweenInfo.new(0.2), {
-								Position = UDim2.new(0, (state and ToggleSwitch.Size.X.Offset / 2 or 0), 0, 0),
-								BackgroundColor3 = (state and config.Toggle_On or config.Toggle_Off),
-							})
-							:Play()
-						library.flags[flag] = state
-						callback(state)
-					end,
-					Module = ToggleModule,
-				}
-				if enabled ~= false then
-					funcs:SetState(flag, true)
-				end
-				ToggleBtn.MouseButton1Click:Connect(function()
-					funcs:SetState()
-				end)
-				return funcs
-			end
-			function section.Keybind(section, text, default, callback)
-				local callback = callback or function() end
-				assert(text, "No text provided")
-				assert(default, "No default key provided")
-				local default = (typeof(default) == "string" and Enum.KeyCode[default] or default)
-				local banned = {
-					Return = true,
-					Space = true,
-					Tab = true,
-					Backquote = true,
-					CapsLock = true,
-					Escape = true,
-					Unknown = true,
-				}
-				local shortNames = {
-					RightControl = "Right Ctrl",
-					LeftControl = "Left Ctrl",
-					LeftShift = "Left Shift",
-					RightShift = "Right Shift",
-					Semicolon = ";",
-					Quote = '"',
-					LeftBracket = "[",
-					RightBracket = "]",
-					Equals = "=",
-					Minus = "-",
-					RightAlt = "Right Alt",
-					LeftAlt = "Left Alt",
-				}
-				local bindKey = default
-				local keyTxt = (default and (shortNames[default.Name] or default.Name) or "None")
-				local KeybindModule = Instance.new("Frame")
-				local KeybindBtn = Instance.new("TextButton")
-				local KeybindBtnC = Instance.new("UICorner")
-				local KeybindValue = Instance.new("TextButton")
-				local KeybindValueC = Instance.new("UICorner")
-				local KeybindL = Instance.new("UIListLayout")
-				local UIPadding = Instance.new("UIPadding")
-				KeybindModule.Name = "KeybindModule"
-				KeybindModule.Parent = Objs
-				KeybindModule.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				KeybindModule.BackgroundTransparency = 1.000 -- 完全透明
-				KeybindModule.BorderSizePixel = 0
-				KeybindModule.Position = UDim2.new(0, 0, 0, 0)
-				KeybindModule.Size = UDim2.new(0, 428, 0, 38)
-				KeybindBtn.Name = "KeybindBtn"
-				KeybindBtn.Parent = KeybindModule
-				KeybindBtn.BackgroundColor3 = config.Keybind_Color
-				KeybindBtn.BackgroundTransparency = 0.5 -- 半透明
-				KeybindBtn.BorderSizePixel = 0
-				KeybindBtn.Size = UDim2.new(0, 428, 0, 38)
-				KeybindBtn.AutoButtonColor = false
-				KeybindBtn.Font = Enum.Font.GothamSemibold
-				KeybindBtn.Text = "   " .. text
-				KeybindBtn.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				KeybindBtn.TextSize = 16.000
-				KeybindBtn.TextXAlignment = Enum.TextXAlignment.Left
-				KeybindBtnC.CornerRadius = UDim.new(0, 6)
-				KeybindBtnC.Name = "KeybindBtnC"
-				KeybindBtnC.Parent = KeybindBtn
-				KeybindValue.Name = "KeybindValue"
-				KeybindValue.Parent = KeybindBtn
-				KeybindValue.BackgroundColor3 = config.Bg_Color
-				KeybindValue.BackgroundTransparency = 0.5 -- 半透明
-				KeybindValue.BorderSizePixel = 0
-				KeybindValue.Position = UDim2.new(0.763033211, 0, 0.289473683, 0)
-				KeybindValue.Size = UDim2.new(0, 100, 0, 28)
-				KeybindValue.AutoButtonColor = false
-				KeybindValue.Font = Enum.Font.Gotham
-				KeybindValue.Text = keyTxt
-				KeybindValue.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				KeybindValue.TextSize = 14.000
-				KeybindValueC.CornerRadius = UDim.new(0, 6)
-				KeybindValueC.Name = "KeybindValueC"
-				KeybindValueC.Parent = KeybindValue
-				KeybindL.Name = "KeybindL"
-				KeybindL.Parent = KeybindBtn
-				KeybindL.HorizontalAlignment = Enum.HorizontalAlignment.Right
-				KeybindL.SortOrder = Enum.SortOrder.LayoutOrder
-				KeybindL.VerticalAlignment = Enum.VerticalAlignment.Center
-				UIPadding.Parent = KeybindBtn
-				UIPadding.PaddingRight = UDim.new(0, 6)
-				services.UserInputService.InputBegan:Connect(function(inp, gpe)
-					if gpe then
-						return
-					end
-					if inp.UserInputType ~= Enum.UserInputType.Keyboard then
-						return
-					end
-					if inp.KeyCode ~= bindKey then
-						return
-					end
-					callback(bindKey.Name)
-				end)
-				KeybindValue.MouseButton1Click:Connect(function()
-					KeybindValue.Text = "..."
-					wait()
-					local key, uwu = services.UserInputService.InputEnded:Wait()
-					local keyName = tostring(key.KeyCode.Name)
-					if key.UserInputType ~= Enum.UserInputType.Keyboard then
-						KeybindValue.Text = keyTxt
-						return
-					end
-					if banned[keyName] then
-						KeybindValue.Text = keyTxt
-						return
-					end
-					wait()
-					bindKey = Enum.KeyCode[keyName]
-					KeybindValue.Text = shortNames[keyName] or keyName
-				end)
-				KeybindValue:GetPropertyChangedSignal("TextBounds"):Connect(function()
-					KeybindValue.Size = UDim2.new(0, KeybindValue.TextBounds.X + 30, 0, 28)
-				end)
-				KeybindValue.Size = UDim2.new(0, KeybindValue.TextBounds.X + 30, 0, 28)
-			end
-			function section.Textbox(section, text, flag, default, callback)
-				local callback = callback or function() end
-				assert(text, "No text provided")
-				assert(flag, "No flag provided")
-				assert(default, "No default text provided")
-				library.flags[flag] = default
-				local TextboxModule = Instance.new("Frame")
-				local TextboxBack = Instance.new("TextButton")
-				local TextboxBackC = Instance.new("UICorner")
-				local BoxBG = Instance.new("TextButton")
-				local BoxBGC = Instance.new("UICorner")
-				local TextBox = Instance.new("TextBox")
-				local TextboxBackL = Instance.new("UIListLayout")
-				local TextboxBackP = Instance.new("UIPadding")
-				TextboxModule.Name = "TextboxModule"
-				TextboxModule.Parent = Objs
-				TextboxModule.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				TextboxModule.BackgroundTransparency = 1.000 -- 完全透明
-				TextboxModule.BorderSizePixel = 0
-				TextboxModule.Position = UDim2.new(0, 0, 0, 0)
-				TextboxModule.Size = UDim2.new(0, 428, 0, 38)
-				TextboxBack.Name = "TextboxBack"
-				TextboxBack.Parent = TextboxModule
-				TextboxBack.BackgroundColor3 = config.Textbox_Color
-				TextboxBack.BackgroundTransparency = 0.5 -- 半透明
-				TextboxBack.BorderSizePixel = 0
-				TextboxBack.Size = UDim2.new(0, 428, 0, 38)
-				TextboxBack.AutoButtonColor = false
-				TextboxBack.Font = Enum.Font.GothamSemibold
-				TextboxBack.Text = "   " .. text
-				TextboxBack.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				TextboxBack.TextSize = 16.000
-				TextboxBack.TextXAlignment = Enum.TextXAlignment.Left
-				TextboxBackC.CornerRadius = UDim.new(0, 6)
-				TextboxBackC.Name = "TextboxBackC"
-				TextboxBackC.Parent = TextboxBack
-				BoxBG.Name = "BoxBG"
-				BoxBG.Parent = TextboxBack
-				BoxBG.BackgroundColor3 = config.Bg_Color
-				BoxBG.BackgroundTransparency = 0.5 -- 半透明
-				BoxBG.BorderSizePixel = 0
-				BoxBG.Position = UDim2.new(0.763033211, 0, 0.289473683, 0)
-				BoxBG.Size = UDim2.new(0, 100, 0, 28)
-				BoxBG.AutoButtonColor = false
-				BoxBG.Font = Enum.Font.Gotham
-				BoxBG.Text = ""
-				BoxBG.TextColor3 = Color3.fromRGB(255, 255, 255)
-				BoxBG.TextSize = 14.000
-				BoxBGC.CornerRadius = UDim.new(0, 6)
-				BoxBGC.Name = "BoxBGC"
-				BoxBGC.Parent = BoxBG
-				TextBox.Parent = BoxBG
-				TextBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				TextBox.BackgroundTransparency = 1.000 -- 完全透明
-				TextBox.BorderSizePixel = 0
-				TextBox.Size = UDim2.new(1, 0, 1, 0)
-				TextBox.Font = Enum.Font.Gotham
-				TextBox.Text = default
-				TextBox.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				TextBox.TextSize = 14.000
-				TextboxBackL.Name = "TextboxBackL"
-				TextboxBackL.Parent = TextboxBack
-				TextboxBackL.HorizontalAlignment = Enum.HorizontalAlignment.Right
-				TextboxBackL.SortOrder = Enum.SortOrder.LayoutOrder
-				TextboxBackL.VerticalAlignment = Enum.VerticalAlignment.Center
-				TextboxBackP.Name = "TextboxBackP"
-				TextboxBackP.Parent = TextboxBack
-				TextboxBackP.PaddingRight = UDim.new(0, 6)
-				TextBox.FocusLost:Connect(function()
-					if TextBox.Text == "" then
-						TextBox.Text = default
-					end
-					library.flags[flag] = TextBox.Text
-					callback(TextBox.Text)
-				end)
-				TextBox:GetPropertyChangedSignal("TextBounds"):Connect(function()
-					BoxBG.Size = UDim2.new(0, TextBox.TextBounds.X + 30, 0, 28)
-				end)
-				BoxBG.Size = UDim2.new(0, TextBox.TextBounds.X + 30, 0, 28)
-			end
-			function section.Slider(section, text, flag, default, min, max, precise, callback)
-				local callback = callback or function() end
-				local min = min or 1
-				local max = max or 10
-				local default = default or min
-				local precise = precise or false
-				library.flags[flag] = default
-				assert(text, "No text provided")
-				assert(flag, "No flag provided")
-				assert(default, "No default value provided")
-				local SliderModule = Instance.new("Frame")
-				local SliderBack = Instance.new("TextButton")
-				local SliderBackC = Instance.new("UICorner")
-				local SliderBar = Instance.new("Frame")
-				local SliderBarC = Instance.new("UICorner")
-				local SliderPart = Instance.new("Frame")
-				local SliderPartC = Instance.new("UICorner")
-				local SliderValBG = Instance.new("TextButton")
-				local SliderValBGC = Instance.new("UICorner")
-				local SliderValue = Instance.new("TextBox")
-				local MinSlider = Instance.new("TextButton")
-				local AddSlider = Instance.new("TextButton")
-				SliderModule.Name = "SliderModule"
-				SliderModule.Parent = Objs
-				SliderModule.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				SliderModule.BackgroundTransparency = 1.000 -- 完全透明
-				SliderModule.BorderSizePixel = 0
-				SliderModule.Position = UDim2.new(0, 0, 0, 0)
-				SliderModule.Size = UDim2.new(0, 428, 0, 38)
-				SliderBack.Name = "SliderBack"
-				SliderBack.Parent = SliderModule
-				SliderBack.BackgroundColor3 = config.Slider_Color
-				SliderBack.BackgroundTransparency = 0.5 -- 半透明
-				SliderBack.BorderSizePixel = 0
-				SliderBack.Size = UDim2.new(0, 428, 0, 38)
-				SliderBack.AutoButtonColor = false
-				SliderBack.Font = Enum.Font.GothamSemibold
-				SliderBack.Text = "   " .. text
-				SliderBack.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				SliderBack.TextSize = 16.000
-				SliderBack.TextXAlignment = Enum.TextXAlignment.Left
-				SliderBackC.CornerRadius = UDim.new(0, 6)
-				SliderBackC.Name = "SliderBackC"
-				SliderBackC.Parent = SliderBack
-				SliderBar.Name = "SliderBar"
-				SliderBar.Parent = SliderBack
-				SliderBar.AnchorPoint = Vector2.new(0, 0.5)
-				SliderBar.BackgroundColor3 = config.Bg_Color
-				SliderBar.BackgroundTransparency = 0.5 -- 半透明
-				SliderBar.BorderSizePixel = 0
-				SliderBar.Position = UDim2.new(0.369000018, 40, 0.5, 0)
-				SliderBar.Size = UDim2.new(0, 140, 0, 12)
-				SliderBarC.CornerRadius = UDim.new(0, 4)
-				SliderBarC.Name = "SliderBarC"
-				SliderBarC.Parent = SliderBar
-				SliderPart.Name = "SliderPart"
-				SliderPart.Parent = SliderBar
-				SliderPart.BackgroundColor3 = config.SliderBar_Color
-				SliderPart.BackgroundTransparency = 0.5 -- 半透明
-				SliderPart.BorderSizePixel = 0
-				SliderPart.Size = UDim2.new(0, 54, 0, 13)
-				SliderPartC.CornerRadius = UDim.new(0, 4)
-				SliderPartC.Name = "SliderPartC"
-				SliderPartC.Parent = SliderPart
-				SliderValBG.Name = "SliderValBG"
-				SliderValBG.Parent = SliderBack
-				SliderValBG.BackgroundColor3 = config.Bg_Color
-				SliderValBG.BackgroundTransparency = 0.5 -- 半透明
-				SliderValBG.BorderSizePixel = 0
-				SliderValBG.Position = UDim2.new(0.883177578, 0, 0.131578952, 0)
-				SliderValBG.Size = UDim2.new(0, 44, 0, 28)
-				SliderValBG.AutoButtonColor = false
-				SliderValBG.Font = Enum.Font.Gotham
-				SliderValBG.Text = ""
-				SliderValBG.TextColor3 = Color3.fromRGB(255, 255, 255)
-				SliderValBG.TextSize = 14.000
-				SliderValBGC.CornerRadius = UDim.new(0, 6)
-				SliderValBGC.Name = "SliderValBGC"
-				SliderValBGC.Parent = SliderValBG
-				SliderValue.Name = "SliderValue"
-				SliderValue.Parent = SliderValBG
-				SliderValue.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				SliderValue.BackgroundTransparency = 1.000 -- 完全透明
-				SliderValue.BorderSizePixel = 0
-				SliderValue.Size = UDim2.new(1, 0, 1, 0)
-				SliderValue.Font = Enum.Font.Gotham
-				SliderValue.Text = "1000"
-				SliderValue.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				SliderValue.TextSize = 14.000
-				MinSlider.Name = "MinSlider"
-				MinSlider.Parent = SliderModule
-				MinSlider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				MinSlider.BackgroundTransparency = 1.000 -- 完全透明
-				MinSlider.BorderSizePixel = 0
-				MinSlider.Position = UDim2.new(0.296728969, 40, 0.236842096, 0)
-				MinSlider.Size = UDim2.new(0, 20, 0, 20)
-				MinSlider.Font = Enum.Font.Gotham
-				MinSlider.Text = "-"
-				MinSlider.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				MinSlider.TextSize = 24.000
-				MinSlider.TextWrapped = true
-				AddSlider.Name = "AddSlider"
-				AddSlider.Parent = SliderModule
-				AddSlider.AnchorPoint = Vector2.new(0, 0.5)
-				AddSlider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				AddSlider.BackgroundTransparency = 1.000 -- 完全透明
-				AddSlider.BorderSizePixel = 0
-				AddSlider.Position = UDim2.new(0.810906529, 0, 0.5, 0)
-				AddSlider.Size = UDim2.new(0, 20, 0, 20)
-				AddSlider.Font = Enum.Font.Gotham
-				AddSlider.Text = "+"
-				AddSlider.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				AddSlider.TextSize = 24.000
-				AddSlider.TextWrapped = true
-				local funcs = {
-					SetValue = function(self, value)
-						local percent = (mouse.X - SliderBar.AbsolutePosition.X) / SliderBar.AbsoluteSize.X
-						if value then
-							percent = (value - min) / (max - min)
-						end
-						percent = math.clamp(percent, 0, 1)
-						if precise then
-							value = value or tonumber(string.format("%.1f", tostring(min + (max - min) * percent)))
-						else
-							value = value or math.floor(min + (max - min) * percent)
-						end
-						library.flags[flag] = tonumber(value)
-						SliderValue.Text = tostring(value)
-						SliderPart.Size = UDim2.new(percent, 0, 1, 0)
-						callback(tonumber(value))
-					end,
-				}
-				MinSlider.MouseButton1Click:Connect(function()
-					local currentValue = library.flags[flag]
-					currentValue = math.clamp(currentValue - 1, min, max)
-					funcs:SetValue(currentValue)
-				end)
-				AddSlider.MouseButton1Click:Connect(function()
-					local currentValue = library.flags[flag]
-					currentValue = math.clamp(currentValue + 1, min, max)
-					funcs:SetValue(currentValue)
-				end)
-				funcs:SetValue(default)
-				local dragging, boxFocused, allowed = false, false, { [""] = true, ["-"] = true }
-				SliderBar.InputBegan:Connect(function(input)
-					if input.UserInputType == Enum.UserInputType.MouseButton1 then
-						funcs:SetValue()
-						dragging = true
-					end
-				end)
-				services.UserInputService.InputEnded:Connect(function(input)
-					if dragging and input.UserInputType == Enum.UserInputType.MouseButton1 then
-						dragging = false
-					end
-				end)
-				services.UserInputService.InputChanged:Connect(function(input)
-					if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-						funcs:SetValue()
-					end
-				end)
-				SliderBar.InputBegan:Connect(function(input)
-					if input.UserInputType == Enum.UserInputType.Touch then
-						funcs:SetValue()
-						dragging = true
-					end
-				end)
-				services.UserInputService.InputEnded:Connect(function(input)
-					if dragging and input.UserInputType == Enum.UserInputType.Touch then
-						dragging = false
-					end
-				end)
-				services.UserInputService.InputChanged:Connect(function(input)
-					if dragging and input.UserInputType == Enum.UserInputType.Touch then
-						funcs:SetValue()
-					end
-				end)
-				SliderValue.Focused:Connect(function()
-					boxFocused = true
-				end)
-				SliderValue.FocusLost:Connect(function()
-					boxFocused = false
-					if SliderValue.Text == "" then
-						funcs:SetValue(default)
-					end
-				end)
-				SliderValue:GetPropertyChangedSignal("Text"):Connect(function()
-					if not boxFocused then
-						return
-					end
-					SliderValue.Text = SliderValue.Text:gsub("%D+", "")
-					local text = SliderValue.Text
-					if not tonumber(text) then
-						SliderValue.Text = SliderValue.Text:gsub("%D+", "")
-					elseif not allowed[text] then
-						if tonumber(text) > max then
-							text = max
-							SliderValue.Text = tostring(max)
-						end
-						funcs:SetValue(tonumber(text))
-					end
-				end)
-				return funcs
-			end
-			function section.Dropdown(section, text, flag, options, callback)
-				local callback = callback or function() end
-				local options = options or {}
-				assert(text, "No text provided")
-				assert(flag, "No flag provided")
-				library.flags[flag] = nil
-				local DropdownModule = Instance.new("Frame")
-				local DropdownTop = Instance.new("TextButton")
-				local DropdownTopC = Instance.new("UICorner")
-				local DropdownOpen = Instance.new("TextButton")
-				local DropdownText = Instance.new("TextBox")
-				local DropdownModuleL = Instance.new("UIListLayout")
-				local Option = Instance.new("TextButton")
-				local OptionC = Instance.new("UICorner")
-				DropdownModule.Name = "DropdownModule"
-				DropdownModule.Parent = Objs
-				DropdownModule.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				DropdownModule.BackgroundTransparency = 1.000 -- 完全透明
-				DropdownModule.BorderSizePixel = 0
-				DropdownModule.ClipsDescendants = true
-				DropdownModule.Position = UDim2.new(0, 0, 0, 0)
-				DropdownModule.Size = UDim2.new(0, 428, 0, 38)
-				DropdownTop.Name = "DropdownTop"
-				DropdownTop.Parent = DropdownModule
-				DropdownTop.BackgroundColor3 = config.Dropdown_Color
-				DropdownTop.BackgroundTransparency = 0.5 -- 半透明
-				DropdownTop.BorderSizePixel = 0
-				DropdownTop.Size = UDim2.new(0, 428, 0, 38)
-				DropdownTop.AutoButtonColor = false
-				DropdownTop.Font = Enum.Font.GothamSemibold
-				DropdownTop.Text = ""
-				DropdownTop.TextColor3 = Color3.fromRGB(255, 255, 255)
-				DropdownTop.TextSize = 16.000
-				DropdownTop.TextXAlignment = Enum.TextXAlignment.Left
-				DropdownTopC.CornerRadius = UDim.new(0, 6)
-				DropdownTopC.Name = "DropdownTopC"
-				DropdownTopC.Parent = DropdownTop
-				DropdownOpen.Name = "DropdownOpen"
-				DropdownOpen.Parent = DropdownTop
-				DropdownOpen.AnchorPoint = Vector2.new(0, 0.5)
-				DropdownOpen.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				DropdownOpen.BackgroundTransparency = 1.000 -- 完全透明
-				DropdownOpen.BorderSizePixel = 0
-				DropdownOpen.Position = UDim2.new(0.918383181, 0, 0.5, 0)
-				DropdownOpen.Size = UDim2.new(0, 20, 0, 20)
-				DropdownOpen.Font = Enum.Font.Gotham
-				DropdownOpen.Text = "+"
-				DropdownOpen.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				DropdownOpen.TextSize = 24.000
-				DropdownOpen.TextWrapped = true
-				DropdownText.Name = "DropdownText"
-				DropdownText.Parent = DropdownTop
-				DropdownText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				DropdownText.BackgroundTransparency = 1.000 -- 完全透明
-				DropdownText.BorderSizePixel = 0
-				DropdownText.Position = UDim2.new(0.0373831764, 0, 0, 0)
-				DropdownText.Size = UDim2.new(0, 184, 0, 38)
-				DropdownText.Font = Enum.Font.GothamSemibold
-				DropdownText.PlaceholderColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				DropdownText.PlaceholderText = text
-				DropdownText.Text = ""
-				DropdownText.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-				DropdownText.TextSize = 16.000
-				DropdownText.TextXAlignment = Enum.TextXAlignment.Left
-				DropdownModuleL.Name = "DropdownModuleL"
-				DropdownModuleL.Parent = DropdownModule
-				DropdownModuleL.SortOrder = Enum.SortOrder.LayoutOrder
-				DropdownModuleL.Padding = UDim.new(0, 4)
-				local setAllVisible = function()
-					local options = DropdownModule:GetChildren()
-					for i = 1, #options do
-						local option = options[i]
-						if option:IsA("TextButton") and option.Name:match("Option_") then
-							option.Visible = true
-						end
-					end
-				end
-				local searchDropdown = function(text)
-					local options = DropdownModule:GetChildren()
-					for i = 1, #options do
-						local option = options[i]
-						if text == "" then
-							setAllVisible()
-						else
-							if option:IsA("TextButton") and option.Name:match("Option_") then
-								if option.Text:lower():match(text:lower()) then
-									option.Visible = true
-								else
-									option.Visible = false
-								end
-							end
-						end
-					end
-				end
-				local open = false
-				local ToggleDropVis = function()
-					open = not open
-					if open then
-						setAllVisible()
-					end
-					DropdownOpen.Text = (open and "-" or "+")
-					DropdownModule.Size =
-						UDim2.new(0, 428, 0, (open and DropdownModuleL.AbsoluteContentSize.Y + 4 or 38))
-				end
-				DropdownOpen.MouseButton1Click:Connect(ToggleDropVis)
-				DropdownText.Focused:Connect(function()
-					if open then
-						return
-					end
-					ToggleDropVis()
-				end)
-				DropdownText:GetPropertyChangedSignal("Text"):Connect(function()
-					if not open then
-						return
-					end
-					searchDropdown(DropdownText.Text)
-				end)
-				DropdownModuleL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-					if not open then
-						return
-					end
-					DropdownModule.Size = UDim2.new(0, 428, 0, (DropdownModuleL.AbsoluteContentSize.Y + 4))
-				end)
-				local funcs = {}
-				funcs.AddOption = function(self, option)
-					local Option = Instance.new("TextButton")
-					local OptionC = Instance.new("UICorner")
-					Option.Name = "Option_" .. option
-					Option.Parent = DropdownModule
-					Option.BackgroundColor3 = config.TabColor
-					Option.BackgroundTransparency = 0.5 -- 半透明
-					Option.BorderSizePixel = 0
-					Option.Position = UDim2.new(0, 0, 0.328125, 0)
-					Option.Size = UDim2.new(0, 428, 0, 26)
-					Option.AutoButtonColor = false
-					Option.Font = Enum.Font.Gotham
-					Option.Text = option
-					Option.TextColor3 = Color3.fromRGB(255, 255, 255) -- 文字保持不透明
-					Option.TextSize = 14.000
-					OptionC.CornerRadius = UDim.new(0, 6)
-					OptionC.Name = "OptionC"
-					OptionC.Parent = Option
-					Option.MouseButton1Click:Connect(function()
-						ToggleDropVis()
-						callback(Option.Text)
-						DropdownText.Text = Option.Text
-						library.flags[flag] = Option.Text
-					end)
-				end
-				funcs.RemoveOption = function(self, option)
-					local option = DropdownModule:FindFirstChild("Option_" .. option)
-					if option then
-						option:Destroy()
-					end
-				end
-				funcs.SetOptions = function(self, options)
-					for _, v in next, DropdownModule:GetChildren() do
-						if v.Name:match("Option_") then
-							v:Destroy()
-						end
-					end
-					for _, v in next, options do
-						funcs:AddOption(v)
-					end
-				end
-				funcs:SetOptions(options)
-				return funcs
-			end
-			return section
-		end
-		return tab
-	end
-	return window
+-- ============================================================
+-- 下载单个文件（带重试）
+-- ============================================================
+local function downloadFile(url, savePath, minSize)
+    minSize = minSize or 1000
+    for attempt = 1, 3 do
+        local data = httpGetSafe(url, 15)
+        if data and #data >= minSize then
+            local ok, err = pcall(function() writefile(savePath, data) end)
+            if ok then
+                return true, #data
+            else
+                warn("[下载失败] 写入失败:", savePath, err)
+            end
+        end
+        if attempt < 3 then
+            task.wait(0.5)
+        end
+    end
+    return false
 end
-return library
+
+-- ============================================================
+-- UI 进度显示
+-- ============================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "PreloadProgress"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 99999
+local ok, err = pcall(function()
+    screenGui.Parent = game:GetService("CoreGui")
+end)
+if not ok then
+    screenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 400, 0, 250)
+mainFrame.Position = UDim2.new(0.5, -200, 0.5, -125)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = mainFrame
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 0, 40)
+titleLabel.Position = UDim2.new(0, 0, 0, 15)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "动画资源预下载"
+titleLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
+titleLabel.TextSize = 22
+titleLabel.Font = Enum.Font.SourceSansBold
+titleLabel.Parent = mainFrame
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -30, 0, 25)
+statusLabel.Position = UDim2.new(0, 15, 0, 65)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "正在初始化..."
+statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+statusLabel.TextSize = 16
+titleLabel.Font = Enum.Font.SourceSans
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = mainFrame
+
+local detailLabel = Instance.new("TextLabel")
+detailLabel.Size = UDim2.new(1, -30, 0, 20)
+detailLabel.Position = UDim2.new(0, 15, 0, 95)
+detailLabel.BackgroundTransparency = 1
+detailLabel.Text = ""
+detailLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+detailLabel.TextSize = 13
+detailLabel.Font = Enum.Font.SourceSans
+detailLabel.TextXAlignment = Enum.TextXAlignment.Left
+detailLabel.Parent = mainFrame
+
+-- 进度条背景
+local barBg = Instance.new("Frame")
+barBg.Size = UDim2.new(1, -30, 0, 20)
+barBg.Position = UDim2.new(0, 15, 0, 130)
+barBg.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+barBg.BorderSizePixel = 0
+barBg.Parent = mainFrame
+local barBgCorner = Instance.new("UICorner")
+barBgCorner.CornerRadius = UDim.new(0, 6)
+barBgCorner.Parent = barBg
+
+-- 进度条前景
+local barFill = Instance.new("Frame")
+barFill.Size = UDim2.new(0, 0, 1, 0)
+barFill.BackgroundColor3 = Color3.fromRGB(100, 200, 255)
+barFill.BorderSizePixel = 0
+barFill.Parent = barBg
+local barFillCorner = Instance.new("UICorner")
+barFillCorner.CornerRadius = UDim.new(0, 6)
+barFillCorner.Parent = barFill
+
+local percentLabel = Instance.new("TextLabel")
+percentLabel.Size = UDim2.new(1, 0, 0, 25)
+percentLabel.Position = UDim2.new(0, 0, 0, 160)
+percentLabel.BackgroundTransparency = 1
+percentLabel.Text = "0%"
+percentLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+percentLabel.TextSize = 18
+percentLabel.Font = Enum.Font.SourceSansBold
+percentLabel.Parent = mainFrame
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(1, -30, 0, 20)
+speedLabel.Position = UDim2.new(0, 15, 0, 195)
+speedLabel.BackgroundTransparency = 1
+speedLabel.Text = ""
+speedLabel.TextColor3 = Color3.fromRGB(130, 130, 130)
+speedLabel.TextSize = 12
+speedLabel.Font = Enum.Font.SourceSans
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.Parent = mainFrame
+
+local tipLabel = Instance.new("TextLabel")
+tipLabel.Size = UDim2.new(1, -30, 0, 20)
+tipLabel.Position = UDim2.new(0, 15, 0, 220)
+tipLabel.BackgroundTransparency = 1
+tipLabel.Text = "下载完成后即可使用主脚本"
+tipLabel.TextColor3 = Color3.fromRGB(100, 100, 100)
+tipLabel.TextSize = 12
+tipLabel.Font = Enum.Font.SourceSansItalic
+tipLabel.TextXAlignment = Enum.TextXAlignment.Left
+tipLabel.Parent = mainFrame
+
+local function updateProgress(current, total, label, detail)
+    local pct = math.floor((current / total) * 100)
+    barFill.Size = UDim2.new(pct / 100, 0, 1, 0)
+    percentLabel.Text = pct .. "%"
+    statusLabel.Text = label
+    detailLabel.Text = detail or ""
+end
+
+-- ============================================================
+-- 主下载流程
+-- ============================================================
+task.spawn(function()
+    local totalSteps = 0
+    local completedSteps = 0
+
+    -- 1. 检测加载动画帧数
+    updateProgress(0, 1, "正在检测加载动画帧数...", "连接 GitHub 仓库中")
+    local loadingTotal = detectLoadingFrames()
+    print("[检测] 加载动画: " .. loadingTotal .. " 帧")
+
+    -- 2. UI背景动画固定152帧
+    local animTotal = 152
+    print("[检测] UI背景动画: " .. animTotal .. " 帧")
+
+    -- 计算总任务数
+    local loadingToDl = 0
+    local animToDl = 0
+    local needBGM = true
+    local needNormalBg = true
+
+    -- 检查加载动画缓存
+    for i = 1, loadingTotal do
+        local fname = string.format("loading_%04d.jpg", i)
+        local fpath = LOADING_CACHE .. "/" .. fname
+        if not isfile(fpath) then
+            loadingToDl = loadingToDl + 1
+        end
+    end
+
+    -- 检查UI背景动画缓存
+    for i = 1, animTotal do
+        local fname = string.format("frame_%04d.jpg", i)
+        local fpath = ANIM_CACHE .. "/" .. fname
+        if not isfile(fpath) then
+            animToDl = animToDl + 1
+        end
+    end
+
+    -- 检查BGM
+    if isfile(BGM_FILE) then
+        local ok, data = pcall(function() return readfile(BGM_FILE) end)
+        if ok and data and #data > 10000 then
+            needBGM = false
+        else
+            pcall(function() if delfile then delfile(BGM_FILE) end end)
+        end
+    end
+
+    -- 检查正常UI背景
+    if isfile(NORMAL_FILE) then
+        local ok, data = pcall(function() return readfile(NORMAL_FILE) end)
+        if ok and data and #data > 1000 then
+            needNormalBg = false
+        else
+            pcall(function() if delfile then delfile(NORMAL_FILE) end end)
+        end
+    end
+
+    totalSteps = loadingToDl + animToDl + (needBGM and 1 or 0) + (needNormalBg and 1 or 0)
+    completedSteps = 0
+
+    print("[统计] 需要下载: 加载动画" .. loadingToDl .. "帧 + UI背景" .. animToDl .. "帧 + BGM(" .. tostring(needBGM) .. ") + 正常背景(" .. tostring(needNormalBg) .. ")")
+    print("[统计] 总计: " .. totalSteps .. " 个文件")
+
+    if totalSteps == 0 then
+        updateProgress(1, 1, "全部资源已缓存，无需下载", "可以直接使用主脚本了！")
+        tipLabel.Text = "所有资源已就绪，关闭此窗口即可"
+        tipLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+        return
+    end
+
+    -- ============================================================
+    -- 下载加载动画帧（batch=3 并发）
+    -- ============================================================
+    print("[下载] 开始下载加载动画 " .. loadingToDl .. " 帧...")
+    local downloaded = 0
+    local dlFailed = 0
+    local failedFrames = {}
+    local BATCH_SIZE = 3
+    local BATCH_DELAY = 0.3
+    local dlStartTime = tick()
+
+    -- 收集需要下载的帧号
+    local toDownload = {}
+    for i = 1, loadingTotal do
+        local fname = string.format("loading_%04d.jpg", i)
+        local fpath = LOADING_CACHE .. "/" .. fname
+        if not isfile(fpath) then
+            toDownload[#toDownload + 1] = i
+        end
+    end
+
+    for batchStart = 1, #toDownload, BATCH_SIZE do
+        local batchDone = 0
+        local batchTotal = math.min(BATCH_SIZE, #toDownload - batchStart + 1)
+        for b = 0, batchTotal - 1 do
+            local idx = batchStart + b
+            local frameNum = toDownload[idx]
+            task.spawn(function()
+                local fname = string.format("loading_%04d.jpg", frameNum)
+                local fpath = LOADING_CACHE .. "/" .. fname
+                local ok, size = downloadFile(LOADING_BASE .. fname, fpath, 5000)
+                if ok then
+                    downloaded = downloaded + 1
+                    completedSteps = completedSteps + 1
+                else
+                    dlFailed = dlFailed + 1
+                    failedFrames[#failedFrames + 1] = frameNum
+                    completedSteps = completedSteps + 1
+                end
+                batchDone = batchDone + 1
+            end)
+        end
+        -- 等待本批完成
+        local waitStart = tick()
+        while batchDone < batchTotal do
+            task.wait(0.1)
+            if (tick() - waitStart) > 30 then break end
+        end
+        -- 更新进度
+        local elapsed = tick() - dlStartTime
+        local speed = completedSteps / math.max(elapsed, 0.1)
+        local remain = (totalSteps - completedSteps) / math.max(speed, 0.01)
+        updateProgress(
+            completedSteps, totalSteps,
+            "下载加载动画帧 (" .. downloaded .. "/" .. loadingToDl .. ")",
+            "失败: " .. dlFailed .. " | 已用时: " .. string.format("%.0f", elapsed) .. "s | 剩余约: " .. string.format("%.0f", remain) .. "s"
+        )
+        speedLabel.Text = string.format("速度: %.1f 文件/秒", speed)
+        if batchStart + BATCH_SIZE <= #toDownload then
+            task.wait(BATCH_DELAY)
+        end
+    end
+
+    -- 重试失败的帧
+    if dlFailed > 0 then
+        print("[重试] 加载动画 " .. #failedFrames .. " 帧失败，开始重试...")
+        local retryOk = 0
+        local retryFail = 0
+        for j = 1, #failedFrames do
+            local frameNum = failedFrames[j]
+            local fname = string.format("loading_%04d.jpg", frameNum)
+            local fpath = LOADING_CACHE .. "/" .. fname
+            local ok, size = downloadFile(LOADING_BASE .. fname, fpath, 5000)
+            if ok then
+                retryOk = retryOk + 1
+            else
+                retryFail = retryFail + 1
+            end
+            updateProgress(
+                completedSteps, totalSteps,
+                "重试加载动画帧 (" .. retryOk .. "/" .. #failedFrames .. ")",
+                "仍失败: " .. retryFail
+            )
+            task.wait(0.3)
+        end
+        print("[重试] 完成 成功:" .. retryOk .. " 失败:" .. retryFail)
+    end
+
+    -- ============================================================
+    -- 下载UI背景动画帧（batch=3 并发）
+    -- ============================================================
+    print("[下载] 开始下载UI背景动画 " .. animToDl .. " 帧...")
+    local animDlOk = 0
+    local animDlFail = 0
+    local animFailedFrames = {}
+
+    local animToDownload = {}
+    for i = 1, animTotal do
+        local fname = string.format("frame_%04d.jpg", i)
+        local fpath = ANIM_CACHE .. "/" .. fname
+        if not isfile(fpath) then
+            animToDownload[#animToDownload + 1] = i
+        end
+    end
+
+    for batchStart = 1, #animToDownload, BATCH_SIZE do
+        local batchDone = 0
+        local batchTotal = math.min(BATCH_SIZE, #animToDownload - batchStart + 1)
+        for b = 0, batchTotal - 1 do
+            local idx = batchStart + b
+            local frameNum = animToDownload[idx]
+            task.spawn(function()
+                local fname = string.format("frame_%04d.jpg", frameNum)
+                local fpath = ANIM_CACHE .. "/" .. fname
+                local ok, size = downloadFile(ANIM_BASE .. fname, fpath, 1000)
+                if ok then
+                    animDlOk = animDlOk + 1
+                    completedSteps = completedSteps + 1
+                else
+                    animDlFail = animDlFail + 1
+                    animFailedFrames[#animFailedFrames + 1] = frameNum
+                    completedSteps = completedSteps + 1
+                end
+                batchDone = batchDone + 1
+            end)
+        end
+        local waitStart = tick()
+        while batchDone < batchTotal do
+            task.wait(0.1)
+            if (tick() - waitStart) > 30 then break end
+        end
+        local elapsed = tick() - dlStartTime
+        local speed = completedSteps / math.max(elapsed, 0.1)
+        local remain = (totalSteps - completedSteps) / math.max(speed, 0.01)
+        updateProgress(
+            completedSteps, totalSteps,
+            "下载UI背景动画帧 (" .. animDlOk .. "/" .. animToDl .. ")",
+            "失败: " .. animDlFail .. " | 已用时: " .. string.format("%.0f", elapsed) .. "s | 剩余约: " .. string.format("%.0f", remain) .. "s"
+        )
+        speedLabel.Text = string.format("速度: %.1f 文件/秒", speed)
+        if batchStart + BATCH_SIZE <= #animToDownload then
+            task.wait(BATCH_DELAY)
+        end
+    end
+
+    -- 重试UI背景失败帧
+    if animDlFail > 0 then
+        print("[重试] UI背景动画 " .. #animFailedFrames .. " 帧失败，开始重试...")
+        local retryOk = 0
+        local retryFail = 0
+        for j = 1, #animFailedFrames do
+            local frameNum = animFailedFrames[j]
+            local fname = string.format("frame_%04d.jpg", frameNum)
+            local fpath = ANIM_CACHE .. "/" .. fname
+            local ok, size = downloadFile(ANIM_BASE .. fname, fpath, 1000)
+            if ok then
+                retryOk = retryOk + 1
+            else
+                retryFail = retryFail + 1
+            end
+            task.wait(0.3)
+        end
+        print("[重试] UI背景完成 成功:" .. retryOk .. " 失败:" .. retryFail)
+    end
+
+    -- ============================================================
+    -- 下载BGM
+    -- ============================================================
+    if needBGM then
+        print("[下载] 正在下载BGM...")
+        updateProgress(completedSteps, totalSteps, "正在下载BGM...", "loading_bgm.mp3")
+        local ok, size = downloadFile(LOADING_BASE .. "loading_bgm.mp3", BGM_FILE, 10000)
+        if ok then
+            completedSteps = completedSteps + 1
+            print("[下载] BGM下载成功 (" .. size .. " 字节)")
+        else
+            print("[下载] BGM下载失败")
+            completedSteps = completedSteps + 1
+        end
+    end
+
+    -- ============================================================
+    -- 下载正常UI背景图
+    -- ============================================================
+    if needNormalBg then
+        print("[下载] 正在下载正常UI背景...")
+        updateProgress(completedSteps, totalSteps, "正在下载正常UI背景...", "bg.jpg")
+        local ok, size = downloadFile(NORMAL_URL, NORMAL_FILE, 1000)
+        if ok then
+            completedSteps = completedSteps + 1
+            print("[下载] 正常UI背景下载成功 (" .. size .. " 字节)")
+        else
+            print("[下载] 正常UI背景下载失败")
+            completedSteps = completedSteps + 1
+        end
+    end
+
+    -- ============================================================
+    -- 完成
+    -- ============================================================
+    local totalTime = tick() - dlStartTime
+    updateProgress(totalSteps, totalSteps, "下载完成！", string.format("总用时: %.0f 秒", totalTime))
+    speedLabel.Text = "所有资源已缓存到本地"
+    tipLabel.Text = "现在可以关闭此窗口并使用主脚本了！"
+    tipLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    percentLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    barFill.BackgroundColor3 = Color3.fromRGB(100, 255, 100)
+
+    -- 最终统计
+    local finalLoading = 0
+    for i = 1, loadingTotal do
+        if isfile(LOADING_CACHE .. "/" .. string.format("loading_%04d.jpg", i)) then
+            finalLoading = finalLoading + 1
+        end
+    end
+    local finalAnim = 0
+    for i = 1, animTotal do
+        if isfile(ANIM_CACHE .. "/" .. string.format("frame_%04d.jpg", i)) then
+            finalAnim = finalAnim + 1
+        end
+    end
+
+    print("============================================")
+    print("   下载完成！")
+    print("   加载动画帧: " .. finalLoading .. "/" .. loadingTotal)
+    print("   UI背景动画帧: " .. finalAnim .. "/" .. animTotal)
+    print("   BGM: " .. tostring(isfile(BGM_FILE)))
+    print("   正常UI背景: " .. tostring(isfile(NORMAL_FILE)))
+    print("   总用时: " .. string.format("%.1f", totalTime) .. " 秒")
+    print("============================================")
+    print("现在可以使用主脚本了！")
+
+    -- 10秒后自动关闭UI
+    task.delay(10, function()
+        if screenGui and screenGui.Parent then
+            screenGui:Destroy()
+        end
+    end)
+end)
