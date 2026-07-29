@@ -285,7 +285,7 @@ local function createMainUI()
             print("[背景] 后台预加载完成")
         end)
 
-        -- 播放循环：双缓冲 + task.wait
+        -- 播放循环：双缓冲 + task.wait（先设图后切换，避免手机闪烁）
         task.spawn(function()
             local cur = 1
             local FPS = 30
@@ -294,23 +294,30 @@ local function createMainUI()
                 if not animGui or not animGui.Parent then break end
                 local frameStart = tick()
 
+                -- 先在隐藏Label上设置图片，让图片有时间在后台加载
                 if cur % 2 == 1 then
                     bgLabelA.Image = bgFrameUrls[cur]
+                else
+                    bgLabelB.Image = bgFrameUrls[cur]
+                end
+
+                -- 等一帧间隔
+                local elapsed = tick() - frameStart
+                if elapsed < interval then
+                    task.wait(interval - elapsed)
+                end
+
+                -- 图片已就绪，切换透明度（无闪烁）
+                if cur % 2 == 1 then
                     bgLabelA.ImageTransparency = 0
                     bgLabelB.ImageTransparency = 1
                 else
-                    bgLabelB.Image = bgFrameUrls[cur]
                     bgLabelB.ImageTransparency = 0
                     bgLabelA.ImageTransparency = 1
                 end
 
                 cur = cur + 1
                 if cur > ANIM_TOTAL then cur = 1 end
-
-                local elapsed = tick() - frameStart
-                if elapsed < interval then
-                    task.wait(interval - elapsed)
-                end
             end
         end)
 
@@ -2063,7 +2070,7 @@ local function playLoadingAnimation()
         end)
 
         -- ========================================================
-        -- 播放动画 + BGM（同一协程，确保同步开始）
+        -- 播放动画 + BGM（第二帧出现时播放BGM，确保同步）
         -- 手机端PreloadAsync不会阻塞task协程，确保动画流畅
         -- ========================================================
         print("[加载] 开始播放动画（双缓冲 " .. readyCount .. " 帧，30fps）...")
@@ -2071,44 +2078,52 @@ local function playLoadingAnimation()
         local cur = 1
         local FPS = 30
         local interval = 1 / FPS
+        local bgmStarted = false
 
         task.spawn(function()
-            -- 第一帧显示的同时开始播放BGM，确保同步
-            pcall(function()
-                bgmSound = Instance.new("Sound")
-                if isfile(BGM_FILE) then
-                    bgmSound.SoundId = getcustomasset(BGM_FILE)
-                else
-                    bgmSound.SoundId = LOADING_BASE .. "loading_bgm.mp3"
-                end
-                bgmSound.Volume = 0.5
-                bgmSound.Looped = false
-                bgmSound.Parent = workspace
-                bgmSound:Play()
-                print("[加载] BGM 已开始播放")
-            end)
-
             while cur <= readyCount and not skipPressed do
                 local frameStart = tick()
 
+                -- 先在隐藏Label上设置图片（不等显示，让图片有时间加载）
                 if cur % 2 == 1 then
-                    -- 奇数帧 → 显示A，隐藏B
                     labelA.Image = frameUrls[cur]
+                else
+                    labelB.Image = frameUrls[cur]
+                end
+
+                -- 等一帧间隔，让图片在后台加载好
+                local elapsed = tick() - frameStart
+                if elapsed < interval then
+                    task.wait(interval - elapsed)
+                end
+
+                -- 图片已就绪，切换透明度（无闪烁）
+                if cur % 2 == 1 then
                     labelA.ImageTransparency = 0
                     labelB.ImageTransparency = 1
                 else
-                    -- 偶数帧 → 显示B，隐藏A
-                    labelB.Image = frameUrls[cur]
                     labelB.ImageTransparency = 0
                     labelA.ImageTransparency = 1
                 end
 
                 cur = cur + 1
 
-                -- 按帧率等待（补偿已用时间）
-                local elapsed = tick() - frameStart
-                if elapsed < interval then
-                    task.wait(interval - elapsed)
+                -- 第二帧出现时播放BGM
+                if cur == 2 and not bgmStarted then
+                    bgmStarted = true
+                    pcall(function()
+                        bgmSound = Instance.new("Sound")
+                        if isfile(BGM_FILE) then
+                            bgmSound.SoundId = getcustomasset(BGM_FILE)
+                        else
+                            bgmSound.SoundId = LOADING_BASE .. "loading_bgm.mp3"
+                        end
+                        bgmSound.Volume = 0.5
+                        bgmSound.Looped = false
+                        bgmSound.Parent = workspace
+                        bgmSound:Play()
+                        print("[加载] BGM 已开始播放")
+                    end)
                 end
             end
 
