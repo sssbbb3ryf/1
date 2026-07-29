@@ -1947,37 +1947,62 @@ local function playLoadingAnimation()
         bgFrame.ZIndex = 0
         bgFrame.Parent = screenGui
 
-        -- 创建所有帧的 ImageLabel（PC和手机端统一方案）
-        -- 先创建并赋值URL，然后 PreloadAsync 强制下载到内存
-        local frames = {}
-        for i = 1, readyCount do
-            local lbl = Instance.new("ImageLabel")
-            lbl.Name = "LoadF" .. i
-            lbl.Size = UDim2.new(1, 0, 1, 0)
-            lbl.Position = UDim2.new(0, 0, 0, 0)
-            lbl.BackgroundTransparency = 1
-            lbl.ImageTransparency = 1
-            lbl.ZIndex = 5
-            lbl.ScaleType = Enum.ScaleType.Stretch
-            if frameUrls[i] then
-                lbl.Image = frameUrls[i]
-            end
-            lbl.Parent = screenGui
-            frames[i] = lbl
-        end
+        -- ========================================================
+        -- 双缓冲播放（仅2个ImageLabel，手机端友好）
+        -- 不再创建270个全屏Label，避免手机GPU内存爆掉
+        -- ========================================================
+        local labelA = Instance.new("ImageLabel")
+        labelA.Name = "BufA"
+        labelA.Size = UDim2.new(1, 0, 1, 0)
+        labelA.Position = UDim2.new(0, 0, 0, 0)
+        labelA.BackgroundTransparency = 1
+        labelA.ImageTransparency = 1
+        labelA.ZIndex = 5
+        labelA.ScaleType = Enum.ScaleType.Stretch
+        labelA.Parent = screenGui
 
-        -- 显示第一帧
-        if frames[1] then
-            frames[1].ImageTransparency = 0
-        end
+        local labelB = Instance.new("ImageLabel")
+        labelB.Name = "BufB"
+        labelB.Size = UDim2.new(1, 0, 1, 0)
+        labelB.Position = UDim2.new(0, 0, 0, 0)
+        labelB.BackgroundTransparency = 1
+        labelB.ImageTransparency = 1
+        labelB.ZIndex = 5
+        labelB.ScaleType = Enum.ScaleType.Stretch
+        labelB.Parent = screenGui
 
-        -- GPU预加载：强制下载所有URL图片到GPU内存
-        print("[加载] GPU 预加载 " .. #frames .. " 帧...")
-        pcall(function()
+        -- 立即显示第一帧
+        labelA.Image = frameUrls[1]
+        labelA.ImageTransparency = 0
+
+        -- 后台滚动预加载（小批量，不阻塞UI线程）
+        -- 每次只创建10个1x1极小Label预加载，加载完立即销毁
+        task.spawn(function()
+            print("[加载] 后台滚动预加载 " .. readyCount .. " 帧...")
             local ContentProvider = game:GetService("ContentProvider")
-            ContentProvider:PreloadAsync(frames)
+            local PRELOAD_BATCH = 10
+            for batchStart = 1, readyCount, PRELOAD_BATCH do
+                if skipPressed then break end
+                local batchEnd = math.min(batchStart + PRELOAD_BATCH - 1, readyCount)
+                local batch = {}
+                for i = batchStart, batchEnd do
+                    local tmp = Instance.new("ImageLabel")
+                    tmp.Image = frameUrls[i]
+                    tmp.ImageTransparency = 1
+                    tmp.Size = UDim2.new(0, 1, 0, 1) -- 1x1像素，极省GPU内存
+                    tmp.Parent = screenGui
+                    batch[#batch + 1] = tmp
+                end
+                pcall(function()
+                    ContentProvider:PreloadAsync(batch)
+                end)
+                for _, tmp in ipairs(batch) do
+                    tmp:Destroy()
+                end
+                task.wait(0.01) -- 让出UI线程
+            end
+            print("[加载] 后台预加载完成")
         end)
-        print("[加载] GPU 预加载完成，开始播放动画")
 
         -- 跳过按钮
         local skipBtn = Instance.new("TextButton")
@@ -2031,45 +2056,50 @@ local function playLoadingAnimation()
             print("[加载] BGM 已开始播放")
         end)
 
-        print("[加载] 开始播放动画（一次）...")
+        -- ========================================================
+        -- 播放动画：双缓冲交替 + task.wait（不依赖RenderStepped）
+        -- 手机端PreloadAsync不会阻塞task协程，确保动画流畅
+        -- ========================================================
+        print("[加载] 开始播放动画（双缓冲 " .. readyCount .. " 帧，30fps）...")
 
-        -- 播放：切换透明度，30fps，播放一次后淡出
         local cur = 1
-        local lastSwitch = 0
         local FPS = 30
         local interval = 1 / FPS
-        local finished = false
 
-        local animConn
-        animConn = RunService.RenderStepped:Connect(function()
-            if skipPressed or not screenGui or not screenGui.Parent then
-                if animConn then animConn:Disconnect() end
-                return
-            end
-            if finished then return end
-            local now = tick()
-            if now - lastSwitch >= interval then
-                lastSwitch = now
-                if frames[cur] then
-                    frames[cur].ImageTransparency = 1
+        task.spawn(function()
+            while cur <= readyCount and not skipPressed do
+                local frameStart = tick()
+
+                if cur % 2 == 1 then
+                    -- 奇数帧 → 显示A，隐藏B
+                    labelA.Image = frameUrls[cur]
+                    labelA.ImageTransparency = 0
+                    labelB.ImageTransparency = 1
+                else
+                    -- 偶数帧 → 显示B，隐藏A
+                    labelB.Image = frameUrls[cur]
+                    labelB.ImageTransparency = 0
+                    labelA.ImageTransparency = 1
                 end
+
                 cur = cur + 1
-                if cur > readyCount then
-                    finished = true
-                    if animConn then animConn:Disconnect() end
-                    local fadeInfo = TweenInfo.new(1.5, Enum.EasingStyle.Linear)
-                    for _, lbl in ipairs(frames) do
-                        pcall(function()
-                            TweenService:Create(lbl, fadeInfo, {ImageTransparency = 1}):Play()
-                        end)
-                    end
-                    task.wait(1.5)
-                    if not skipPressed then finishLoading() end
-                    return
+
+                -- 按帧率等待（补偿已用时间）
+                local elapsed = tick() - frameStart
+                if elapsed < interval then
+                    task.wait(interval - elapsed)
                 end
-                if frames[cur] then
-                    frames[cur].ImageTransparency = 0
-                end
+            end
+
+            -- 播放完毕，淡出
+            if not skipPressed then
+                local fadeInfo = TweenInfo.new(1.5, Enum.EasingStyle.Linear)
+                pcall(function()
+                    TweenService:Create(labelA, fadeInfo, {ImageTransparency = 1}):Play()
+                    TweenService:Create(labelB, fadeInfo, {ImageTransparency = 1}):Play()
+                end)
+                task.wait(1.5)
+                if not skipPressed then finishLoading() end
             end
         end)
     end)
