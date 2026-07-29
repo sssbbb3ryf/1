@@ -2036,10 +2036,9 @@ local function playLoadingAnimation()
         local FPS = 30
         local interval = 1 / FPS
         local bgmStarted = false
-        local animTotalTime = readyCount / FPS -- 动画总时长（秒）
 
-        -- 预加载BGM并计算延迟，使BGM末尾对齐最后一帧
-        local bgmDelay = 0
+        -- 预加载BGM，计算BGM应该在第几帧开始播放（基于帧号，不受加载卡顿影响）
+        local bgmStartFrame = 1 -- 默认第1帧就播放
         pcall(function()
             local bgmObj = Instance.new("Sound")
             if isfile(BGM_FILE) then
@@ -2055,23 +2054,21 @@ local function playLoadingAnimation()
                 task.wait(0.1)
             end
             local bgmLength = bgmObj.TimeLength
+            local animTotalTime = readyCount / FPS
             print("[加载] BGM时长: " .. string.format("%.2f", bgmLength) .. "s, 动画时长: " .. string.format("%.2f", animTotalTime) .. "s")
             if bgmLength > 0 and bgmLength <= animTotalTime then
-                bgmDelay = animTotalTime - bgmLength
-                print("[加载] BGM将在动画开始 " .. string.format("%.2f", bgmDelay) .. "s 后播放")
+                -- BGM占多少帧
+                local bgmFrames = math.floor(bgmLength * FPS)
+                bgmStartFrame = math.max(1, readyCount - bgmFrames + 1)
+                print("[加载] BGM将在第 " .. bgmStartFrame .. " 帧开始播放")
             end
         end)
 
-        local animStartTime = 0 -- 动画开始的时间戳
-
         task.spawn(function()
-            animStartTime = tick()
-
-            while cur <= readyCount and not skipPressed do
+            while cur < readyCount and not skipPressed do
                 local frameStart = tick()
 
                 local nextIdx = cur + 1
-                if nextIdx > readyCount then nextIdx = readyCount end
 
                 -- 先显示下一帧（确保任何时刻都有帧可见，不闪黑）
                 if frames[nextIdx] then
@@ -2085,25 +2082,22 @@ local function playLoadingAnimation()
 
                 cur = nextIdx
 
-                -- 按延迟时间播放BGM，使末尾对齐最后一帧
-                if not bgmStarted and animStartTime > 0 then
-                    local animElapsed = tick() - animStartTime
-                    if animElapsed >= bgmDelay then
-                        bgmStarted = true
-                        pcall(function()
-                            bgmSound = Instance.new("Sound")
-                            if isfile(BGM_FILE) then
-                                bgmSound.SoundId = getcustomasset(BGM_FILE)
-                            else
-                                bgmSound.SoundId = LOADING_BASE .. "loading_bgm.mp3"
-                            end
-                            bgmSound.Volume = 0.5
-                            bgmSound.Looped = false
-                            bgmSound.Parent = workspace
-                            bgmSound:Play()
-                            print("[加载] BGM 已开始播放（延迟 " .. string.format("%.2f", bgmDelay) .. "s）")
-                        end)
-                    end
+                -- 到达BGM起始帧时播放（基于帧号，不受加载卡顿影响）
+                if not bgmStarted and cur >= bgmStartFrame then
+                    bgmStarted = true
+                    pcall(function()
+                        bgmSound = Instance.new("Sound")
+                        if isfile(BGM_FILE) then
+                            bgmSound.SoundId = getcustomasset(BGM_FILE)
+                        else
+                            bgmSound.SoundId = LOADING_BASE .. "loading_bgm.mp3"
+                        end
+                        bgmSound.Volume = 0.5
+                        bgmSound.Looped = false
+                        bgmSound.Parent = workspace
+                        bgmSound:Play()
+                        print("[加载] BGM 已开始播放（第 " .. bgmStartFrame .. " 帧）")
+                    end)
                 end
 
                 -- 按帧率等待
