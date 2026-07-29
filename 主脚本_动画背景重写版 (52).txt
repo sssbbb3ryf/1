@@ -1759,7 +1759,8 @@ end
 
 -- ============================================================
 -- 加载动画：自动检测帧数 + BGM（只播放一次，最顶层遮挡一切）
--- 手机端兼容：直接用URL加载 + 双缓冲复用（不依赖文件系统）
+-- 统一走本地缓存（PC和手机端都需要先缓存到本地才能播放）
+-- 手机端无文件系统时提示用户先运行预下载脚本
 -- ============================================================
 local function playLoadingAnimation()
     -- GitHub raw 链接（无302重定向，Roblox可直接下载）
@@ -1768,8 +1769,23 @@ local function playLoadingAnimation()
     local BGM_FILE = "loading_bgm.mp3"
     if makefolder then makefolder(LOADING_CACHE) end
 
-    -- 检测是否支持文件系统（手机端很多执行器不支持）
+    -- 检测是否支持文件系统（PC和部分手机执行器支持，不支持则提示先运行预下载脚本）
     local hasFileSystem = (isfile and readfile and writefile and getcustomasset)
+
+    -- 检测本地缓存是否完整（至少有1帧才算可用）
+    local function checkLocalCache()
+        if not hasFileSystem then return 0 end
+        local count = 0
+        for i = 1, 1000 do
+            local fname = string.format("loading_%04d.jpg", i)
+            if isfile(LOADING_CACHE .. "/" .. fname) then
+                count = i
+            else
+                break
+            end
+        end
+        return count
+    end
 
     local skipPressed = false
     local bgmSound = nil
@@ -1797,24 +1813,13 @@ local function playLoadingAnimation()
         return result
     end
 
-    -- 自动检测仓库里有多少帧（探测到404就停）
+    -- 自动检测可用帧数：优先本地缓存，其次网络探测
     local function detectFrameCount()
-        if hasFileSystem then
-            -- 先检查本地缓存最多的帧号
-            local maxCached = 0
-            for i = 1000, 1, -1 do
-                local fname = string.format("loading_%04d.jpg", i)
-                if isfile(LOADING_CACHE .. "/" .. fname) then
-                    maxCached = i
-                    break
-                end
-            end
-            if maxCached > 0 then
-                local nextFname = string.format("loading_%04d.jpg", maxCached + 1)
-                if not isfile(LOADING_CACHE .. "/" .. nextFname) then
-                    return maxCached
-                end
-            end
+        -- 优先检查本地缓存
+        local cached = checkLocalCache()
+        if cached > 0 then
+            print("[加载] 本地缓存已有 " .. cached .. " 帧，直接使用")
+            return cached
         end
         -- 网络探测：从1开始，每50帧跳着检测
         local lastFound = 0
@@ -1853,147 +1858,53 @@ local function playLoadingAnimation()
             return
         end
 
-        -- 预下载所有帧到内存（URL列表），供播放时直接用
+        -- ============================================================
+        -- 帧准备：统一走本地缓存
+        -- 无文件系统 → 提示运行预下载脚本，跳过动画
+        -- 有文件系统但无缓存 → 提示运行预下载脚本，跳过动画
+        -- 有文件系统且有缓存 → 直接用 getcustomasset 加载
+        -- ============================================================
         local frameUrls = {}
-        if hasFileSystem then
-            -- PC端：走文件缓存流程
-            -- 校验缓存，清理旧假数据
-            print("[加载] 正在校验缓存...")
-            local validCache = 0
-            local corruptFiles = 0
-            for i = 1, LOADING_TOTAL do
-                local fname = string.format("loading_%04d.jpg", i)
-                local fpath = LOADING_CACHE .. "/" .. fname
-                if isfile(fpath) then
-                    local ok, data = pcall(function() return readfile(fpath) end)
-                    if ok and data and #data >= 5000 then
-                        validCache = validCache + 1
-                    else
-                        pcall(function() if delfile then delfile(fpath) end end)
-                        corruptFiles = corruptFiles + 1
-                    end
-                end
-            end
-            local bgmCached = false
-            if isfile(BGM_FILE) then
-                local ok, data = pcall(function() return readfile(BGM_FILE) end)
-                if ok and data and #data > 10000 then
-                    bgmCached = true
-                else
-                    pcall(function() if delfile then delfile(BGM_FILE) end end)
-                end
-            end
-            if corruptFiles > 0 then
-                print("[加载] 清理了 " .. corruptFiles .. " 个损坏缓存文件")
-            end
-            print("[加载] 有效缓存: " .. validCache .. "/" .. LOADING_TOTAL)
 
-            local toDownload = {}
-            for i = 1, LOADING_TOTAL do
-                local fname = string.format("loading_%04d.jpg", i)
-                local fpath = LOADING_CACHE .. "/" .. fname
-                if not isfile(fpath) then
-                    toDownload[#toDownload + 1] = i
-                end
-            end
-            print("[加载] 需要下载 " .. #toDownload .. " 帧")
+        if not hasFileSystem then
+            -- 无文件系统权限，无法播放动画
+            print("[加载] 当前执行器不支持文件系统，无法播放加载动画")
+            print("[加载] 请先运行「预下载脚本」来缓存动画资源，或更换支持文件系统的执行器")
+            -- 弹出提示
+            pcall(function()
+                starterGui:SetCore("SendNotification", {
+                    Title = "加载动画",
+                    Text = "当前执行器不支持文件系统，请先运行预下载脚本！动画已跳过",
+                    Duration = 10
+                })
+            end)
+            createMainUI()
+            return
+        end
 
-            local downloaded = 0
-            local dlFailed = 0
-            local BATCH_SIZE = 3
-            local BATCH_DELAY = 0.3
-            for batchStart = 1, #toDownload, BATCH_SIZE do
-                local batchDone = 0
-                local batchTotal = math.min(BATCH_SIZE, #toDownload - batchStart + 1)
-                for b = 0, batchTotal - 1 do
-                    local idx = batchStart + b
-                    local frameNum = toDownload[idx]
-                    task.spawn(function()
-                        local fname = string.format("loading_%04d.jpg", frameNum)
-                        local fpath = LOADING_CACHE .. "/" .. fname
-                        local data = httpGetSafe(LOADING_BASE .. fname, 15)
-                        if data and #data >= 5000 then
-                            pcall(function() writefile(fpath, data) end)
-                            downloaded = downloaded + 1
-                        else
-                            dlFailed = dlFailed + 1
-                        end
-                        batchDone = batchDone + 1
-                    end)
-                end
-                local waitStart = tick()
-                while batchDone < batchTotal do
-                    task.wait(0.1)
-                    if (tick() - waitStart) > 20 then break end
-                end
-                if batchStart + BATCH_SIZE <= #toDownload then
-                    task.wait(BATCH_DELAY)
-                end
-            end
-            print("[加载] 下载完毕 DL:" .. downloaded .. " FAIL:" .. dlFailed)
+        -- 有文件系统，检查本地缓存
+        local cachedCount = checkLocalCache()
+        if cachedCount < LOADING_TOTAL then
+            -- 缓存不完整或为空，提示运行预下载脚本
+            print("[加载] 本地缓存不完整 (" .. cachedCount .. "/" .. LOADING_TOTAL .. ")")
+            print("[加载] 请先运行「预下载脚本」来下载所有动画帧！动画已跳过")
+            pcall(function()
+                starterGui:SetCore("SendNotification", {
+                    Title = "加载动画",
+                    Text = "缓存不完整(" .. cachedCount .. "/" .. LOADING_TOTAL .. ")，请先运行预下载脚本！",
+                    Duration = 10
+                })
+            end)
+            createMainUI()
+            return
+        end
 
-            local retryRounds = 0
-            while dlFailed > 0 and retryRounds < 3 do
-                retryRounds = retryRounds + 1
-                local retryList = {}
-                for i = 1, LOADING_TOTAL do
-                    local fname = string.format("loading_%04d.jpg", i)
-                    local fpath = LOADING_CACHE .. "/" .. fname
-                    if not isfile(fpath) then
-                        retryList[#retryList + 1] = i
-                    end
-                end
-                if #retryList == 0 then break end
-                print("[加载] 重试第" .. retryRounds .. "轮 (" .. #retryList .. "帧)")
-                local retryOk = 0
-                local retryFail = 0
-                for j = 1, #retryList do
-                    local frameNum = retryList[j]
-                    local fname = string.format("loading_%04d.jpg", frameNum)
-                    local fpath = LOADING_CACHE .. "/" .. fname
-                    local data = httpGetSafe(LOADING_BASE .. fname, 15)
-                    if data and #data >= 5000 then
-                        pcall(function() writefile(fpath, data) end)
-                        retryOk = retryOk + 1
-                    else
-                        retryFail = retryFail + 1
-                    end
-                    task.wait(0.3)
-                end
-                dlFailed = retryFail
-                print("[加载] 重试完成 成功:" .. retryOk .. " 失败:" .. retryFail)
-            end
-
-            -- BGM
-            if not bgmCached then
-                print("[加载] 下载BGM...")
-                local data = httpGetSafe(LOADING_BASE .. "loading_bgm.mp3", 30)
-                if data and #data > 10000 then
-                    writefile(BGM_FILE, data)
-                    bgmCached = true
-                    print("[加载] BGM下载成功")
-                else
-                    print("[加载] BGM下载失败")
-                end
-            end
-
-            -- 构建 URL 列表（PC端用 getcustomasset）
-            for i = 1, LOADING_TOTAL do
-                local fname = string.format("loading_%04d.jpg", i)
-                local fpath = LOADING_CACHE .. "/" .. fname
-                if isfile(fpath) then
-                    frameUrls[i] = getcustomasset(fpath)
-                else
-                    frameUrls[i] = LOADING_BASE .. fname
-                end
-            end
-        else
-            -- 手机端/无文件系统：直接用 GitHub URL，不缓存到本地
-            print("[加载] 无文件系统权限，使用URL直接加载模式")
-            for i = 1, LOADING_TOTAL do
-                local fname = string.format("loading_%04d.jpg", i)
-                frameUrls[i] = LOADING_BASE .. fname
-            end
+        -- 缓存完整，构建 getcustomasset URL 列表
+        print("[加载] 本地缓存完整，直接使用 (" .. cachedCount .. " 帧)")
+        for i = 1, LOADING_TOTAL do
+            local fname = string.format("loading_%04d.jpg", i)
+            local fpath = LOADING_CACHE .. "/" .. fname
+            frameUrls[i] = getcustomasset(fpath)
         end
 
         local readyCount = #frameUrls
@@ -2105,10 +2016,10 @@ local function playLoadingAnimation()
             finishLoading()
         end)
 
-        -- 播放BGM（PC端用缓存，手机端用URL）
+        -- 播放BGM（本地缓存）
         pcall(function()
             bgmSound = Instance.new("Sound")
-            if hasFileSystem and isfile(BGM_FILE) then
+            if isfile(BGM_FILE) then
                 bgmSound.SoundId = getcustomasset(BGM_FILE)
             else
                 bgmSound.SoundId = LOADING_BASE .. "loading_bgm.mp3"
@@ -2119,35 +2030,6 @@ local function playLoadingAnimation()
             bgmSound:Play()
             print("[加载] BGM 已开始播放")
         end)
-
-        -- 预加载所有帧到 ContentProvider 缓存（URL和getcustomasset都需要）
-        -- 分批创建临时ImageLabel → PreloadAsync → 销毁，确保GPU缓存
-        print("[加载] 预加载帧到GPU缓存...")
-        local ContentProvider = game:GetService("ContentProvider")
-        local PRELOAD_BATCH = 10
-        for batchStart = 1, readyCount, PRELOAD_BATCH do
-            if skipPressed then break end
-            local batchEnd = math.min(batchStart + PRELOAD_BATCH - 1, readyCount)
-            local batch = {}
-            for i = batchStart, batchEnd do
-                local tmpLbl = Instance.new("ImageLabel")
-                tmpLbl.Name = "Preload_" .. i
-                tmpLbl.Image = frameUrls[i]
-                tmpLbl.ImageTransparency = 1
-                tmpLbl.Size = UDim2.new(1, 0, 1, 0)
-                tmpLbl.Parent = screenGui
-                batch[#batch + 1] = tmpLbl
-            end
-            pcall(function()
-                ContentProvider:PreloadAsync(batch)
-            end)
-            for _, lbl in ipairs(batch) do
-                lbl:Destroy()
-            end
-            -- 批间短暂等待，让UI线程处理
-            task.wait(0.05)
-        end
-        print("[加载] GPU预加载完成")
 
         print("[加载] 开始播放动画（一次）...")
 
