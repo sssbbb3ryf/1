@@ -201,7 +201,7 @@ local function createMainUI()
         end
 
         -- ============================================================
-        -- 动画：双缓冲播放（仅2个ImageLabel，手机端友好）
+        -- 动画：多Label方案（每帧独立Label，Image只设一次，绝不闪烁）
         -- ============================================================
         local GITEE_BASE = "https://gitee.com/xsadad_0/roxy/raw/main/"
         local ANIM_TOTAL = 152
@@ -209,37 +209,30 @@ local function createMainUI()
         if makefolder then makefolder(CACHE_FOLDER) end
 
         if isSpecialUI then
-        -- 双缓冲：仅2个ImageLabel交替显示
-        local bgLabelA = Instance.new("ImageLabel")
-        bgLabelA.Name = "BgBufA"
-        bgLabelA.Size = UDim2.new(0, 600, 0, 300)
-        bgLabelA.Position = UDim2.new(0.5, -300, 0.5, -150)
-        bgLabelA.BackgroundTransparency = 1
-        bgLabelA.ImageTransparency = 1
-        bgLabelA.ZIndex = 1
-        bgLabelA.ScaleType = Enum.ScaleType.Stretch
-        bgLabelA.Parent = animGui
+        -- 创建152个独立ImageLabel，Image只设一次
+        local bgFrames = {}
+        for i = 1, ANIM_TOTAL do
+            local lbl = Instance.new("ImageLabel")
+            lbl.Name = "BgF" .. i
+            lbl.Size = UDim2.new(0, 600, 0, 300)
+            lbl.Position = UDim2.new(0.5, -300, 0.5, -150)
+            lbl.BackgroundTransparency = 1
+            lbl.ImageTransparency = 1
+            lbl.ZIndex = 1
+            lbl.ScaleType = Enum.ScaleType.Stretch
+            lbl.Parent = animGui
+            bgFrames[i] = lbl
+        end
 
-        local bgLabelB = Instance.new("ImageLabel")
-        bgLabelB.Name = "BgBufB"
-        bgLabelB.Size = UDim2.new(0, 600, 0, 300)
-        bgLabelB.Position = UDim2.new(0.5, -300, 0.5, -150)
-        bgLabelB.BackgroundTransparency = 1
-        bgLabelB.ImageTransparency = 1
-        bgLabelB.ZIndex = 1
-        bgLabelB.ScaleType = Enum.ScaleType.Stretch
-        bgLabelB.Parent = animGui
-
-        -- 构建帧URL列表
-        local bgFrameUrls = {}
+        -- 构建帧URL列表 + 设置Image
         for i = 1, ANIM_TOTAL do
             local fname = string.format("frame_%04d.jpg", i)
             local fpath = CACHE_FOLDER .. "/" .. fname
             if isfile and isfile(fpath) and readfile and getcustomasset then
-                bgFrameUrls[i] = getcustomasset(fpath)
+                bgFrames[i].Image = getcustomasset(fpath)
             else
-                -- 无缓存则从网络加载并保存
-                bgFrameUrls[i] = GITEE_BASE .. fname
+                bgFrames[i].Image = GITEE_BASE .. fname
+                -- 后台下载保存
                 task.spawn(function()
                     local ok, data = pcall(function()
                         return game:HttpGet(GITEE_BASE .. fname)
@@ -252,13 +245,10 @@ local function createMainUI()
         end
 
         -- 立即显示第一帧
-        if bgFrameUrls[1] then
-            bgLabelA.Image = bgFrameUrls[1]
-            bgLabelA.ImageTransparency = 0
-            print("[背景] 第一帧已显示")
-        end
+        bgFrames[1].ImageTransparency = 0
+        print("[背景] 第一帧已显示")
 
-        -- 后台滚动预加载（小批量，不阻塞UI线程）
+        -- 后台小批量预加载（不阻塞播放）
         task.spawn(function()
             print("[背景] 后台预加载 " .. ANIM_TOTAL .. " 帧...")
             local ContentProvider = game:GetService("ContentProvider")
@@ -267,25 +257,17 @@ local function createMainUI()
                 local batchEnd = math.min(batchStart + PRELOAD_BATCH - 1, ANIM_TOTAL)
                 local batch = {}
                 for i = batchStart, batchEnd do
-                    local tmp = Instance.new("ImageLabel")
-                    tmp.Image = bgFrameUrls[i]
-                    tmp.ImageTransparency = 1
-                    tmp.Size = UDim2.new(0, 1, 0, 1)
-                    tmp.Parent = animGui
-                    batch[#batch + 1] = tmp
+                    batch[#batch + 1] = bgFrames[i]
                 end
                 pcall(function()
                     ContentProvider:PreloadAsync(batch)
                 end)
-                for _, tmp in ipairs(batch) do
-                    tmp:Destroy()
-                end
                 task.wait(0.01)
             end
             print("[背景] 后台预加载完成")
         end)
 
-        -- 播放循环：双缓冲 + task.wait（先设图后切换，避免手机闪烁）
+        -- 播放循环：task.wait驱动，只切透明度，不碰Image
         task.spawn(function()
             local cur = 1
             local FPS = 30
@@ -294,30 +276,20 @@ local function createMainUI()
                 if not animGui or not animGui.Parent then break end
                 local frameStart = tick()
 
-                -- 先在隐藏Label上设置图片，让图片有时间在后台加载
-                if cur % 2 == 1 then
-                    bgLabelA.Image = bgFrameUrls[cur]
-                else
-                    bgLabelB.Image = bgFrameUrls[cur]
-                end
+                local nextIdx = cur + 1
+                if nextIdx > ANIM_TOTAL then nextIdx = 1 end
 
-                -- 等一帧间隔
+                -- 先显示下一帧（确保任何时刻都有帧可见，不闪黑）
+                bgFrames[nextIdx].ImageTransparency = 0
+                -- 再隐藏当前帧
+                bgFrames[cur].ImageTransparency = 1
+
+                cur = nextIdx
+
                 local elapsed = tick() - frameStart
                 if elapsed < interval then
                     task.wait(interval - elapsed)
                 end
-
-                -- 图片已就绪，切换透明度（无闪烁）
-                if cur % 2 == 1 then
-                    bgLabelA.ImageTransparency = 0
-                    bgLabelB.ImageTransparency = 1
-                else
-                    bgLabelB.ImageTransparency = 0
-                    bgLabelA.ImageTransparency = 1
-                end
-
-                cur = cur + 1
-                if cur > ANIM_TOTAL then cur = 1 end
             end
         end)
 
@@ -1976,37 +1948,30 @@ local function playLoadingAnimation()
         bgFrame.Parent = screenGui
 
         -- ========================================================
-        -- 双缓冲播放（仅2个ImageLabel，手机端友好）
-        -- 不再创建270个全屏Label，避免手机GPU内存爆掉
+        -- 多Label方案：每帧独立Label，Image只设一次，绝不闪烁
+        -- 后台task.spawn预加载 + task.wait播放，互不阻塞
         -- ========================================================
-        local labelA = Instance.new("ImageLabel")
-        labelA.Name = "BufA"
-        labelA.Size = UDim2.new(1, 0, 1, 0)
-        labelA.Position = UDim2.new(0, 0, 0, 0)
-        labelA.BackgroundTransparency = 1
-        labelA.ImageTransparency = 1
-        labelA.ZIndex = 5
-        labelA.ScaleType = Enum.ScaleType.Stretch
-        labelA.Parent = screenGui
-
-        local labelB = Instance.new("ImageLabel")
-        labelB.Name = "BufB"
-        labelB.Size = UDim2.new(1, 0, 1, 0)
-        labelB.Position = UDim2.new(0, 0, 0, 0)
-        labelB.BackgroundTransparency = 1
-        labelB.ImageTransparency = 1
-        labelB.ZIndex = 5
-        labelB.ScaleType = Enum.ScaleType.Stretch
-        labelB.Parent = screenGui
+        local frames = {}
+        for i = 1, readyCount do
+            local lbl = Instance.new("ImageLabel")
+            lbl.Name = "LoadF" .. i
+            lbl.Size = UDim2.new(1, 0, 1, 0)
+            lbl.Position = UDim2.new(0, 0, 0, 0)
+            lbl.BackgroundTransparency = 1
+            lbl.ImageTransparency = 1
+            lbl.ZIndex = 5
+            lbl.ScaleType = Enum.ScaleType.Stretch
+            lbl.Image = frameUrls[i] -- Image只设一次，后续只切透明度
+            lbl.Parent = screenGui
+            frames[i] = lbl
+        end
 
         -- 立即显示第一帧
-        labelA.Image = frameUrls[1]
-        labelA.ImageTransparency = 0
+        frames[1].ImageTransparency = 0
 
-        -- 后台滚动预加载（小批量，不阻塞UI线程）
-        -- 每次只创建10个1x1极小Label预加载，加载完立即销毁
+        -- 后台小批量预加载（不阻塞播放线程）
         task.spawn(function()
-            print("[加载] 后台滚动预加载 " .. readyCount .. " 帧...")
+            print("[加载] 后台预加载 " .. readyCount .. " 帧...")
             local ContentProvider = game:GetService("ContentProvider")
             local PRELOAD_BATCH = 10
             for batchStart = 1, readyCount, PRELOAD_BATCH do
@@ -2014,20 +1979,12 @@ local function playLoadingAnimation()
                 local batchEnd = math.min(batchStart + PRELOAD_BATCH - 1, readyCount)
                 local batch = {}
                 for i = batchStart, batchEnd do
-                    local tmp = Instance.new("ImageLabel")
-                    tmp.Image = frameUrls[i]
-                    tmp.ImageTransparency = 1
-                    tmp.Size = UDim2.new(0, 1, 0, 1) -- 1x1像素，极省GPU内存
-                    tmp.Parent = screenGui
-                    batch[#batch + 1] = tmp
+                    batch[#batch + 1] = frames[i]
                 end
                 pcall(function()
                     ContentProvider:PreloadAsync(batch)
                 end)
-                for _, tmp in ipairs(batch) do
-                    tmp:Destroy()
-                end
-                task.wait(0.01) -- 让出UI线程
+                task.wait(0.01)
             end
             print("[加载] 后台预加载完成")
         end)
@@ -2070,10 +2027,10 @@ local function playLoadingAnimation()
         end)
 
         -- ========================================================
-        -- 播放动画 + BGM（第二帧出现时播放BGM，确保同步）
-        -- 手机端PreloadAsync不会阻塞task协程，确保动画流畅
+        -- 播放动画：task.wait驱动，只切透明度，不碰Image
+        -- 后台预加载在独立线程，不阻塞播放
         -- ========================================================
-        print("[加载] 开始播放动画（双缓冲 " .. readyCount .. " 帧，30fps）...")
+        print("[加载] 开始播放动画（" .. readyCount .. " 帧，30fps）...")
 
         local cur = 1
         local FPS = 30
@@ -2084,29 +2041,20 @@ local function playLoadingAnimation()
             while cur <= readyCount and not skipPressed do
                 local frameStart = tick()
 
-                -- 先在隐藏Label上设置图片（不等显示，让图片有时间加载）
-                if cur % 2 == 1 then
-                    labelA.Image = frameUrls[cur]
-                else
-                    labelB.Image = frameUrls[cur]
+                local nextIdx = cur + 1
+                if nextIdx > readyCount then nextIdx = readyCount end
+
+                -- 先显示下一帧（确保任何时刻都有帧可见，不闪黑）
+                if frames[nextIdx] then
+                    frames[nextIdx].ImageTransparency = 0
                 end
 
-                -- 等一帧间隔，让图片在后台加载好
-                local elapsed = tick() - frameStart
-                if elapsed < interval then
-                    task.wait(interval - elapsed)
+                -- 再隐藏当前帧
+                if frames[cur] then
+                    frames[cur].ImageTransparency = 1
                 end
 
-                -- 图片已就绪，切换透明度（无闪烁）
-                if cur % 2 == 1 then
-                    labelA.ImageTransparency = 0
-                    labelB.ImageTransparency = 1
-                else
-                    labelB.ImageTransparency = 0
-                    labelA.ImageTransparency = 1
-                end
-
-                cur = cur + 1
+                cur = nextIdx
 
                 -- 第二帧出现时播放BGM
                 if cur == 2 and not bgmStarted then
@@ -2125,15 +2073,22 @@ local function playLoadingAnimation()
                         print("[加载] BGM 已开始播放")
                     end)
                 end
+
+                -- 按帧率等待
+                local elapsed = tick() - frameStart
+                if elapsed < interval then
+                    task.wait(interval - elapsed)
+                end
             end
 
             -- 播放完毕，淡出
             if not skipPressed then
                 local fadeInfo = TweenInfo.new(1.5, Enum.EasingStyle.Linear)
-                pcall(function()
-                    TweenService:Create(labelA, fadeInfo, {ImageTransparency = 1}):Play()
-                    TweenService:Create(labelB, fadeInfo, {ImageTransparency = 1}):Play()
-                end)
+                for _, lbl in ipairs(frames) do
+                    pcall(function()
+                        TweenService:Create(lbl, fadeInfo, {ImageTransparency = 1}):Play()
+                    end)
+                end
                 task.wait(1.5)
                 if not skipPressed then finishLoading() end
             end
