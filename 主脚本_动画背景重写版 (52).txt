@@ -201,7 +201,7 @@ local function createMainUI()
         end
 
         -- ============================================================
-        -- 动画：预创建 152 个 ImageLabel（仅特殊 UI 时加载）
+        -- 动画：双缓冲播放（仅2个ImageLabel，手机端友好）
         -- ============================================================
         local GITEE_BASE = "https://gitee.com/xsadad_0/roxy/raw/main/"
         local ANIM_TOTAL = 152
@@ -209,88 +209,109 @@ local function createMainUI()
         if makefolder then makefolder(CACHE_FOLDER) end
 
         if isSpecialUI then
-        -- 预创建 152 个 ImageLabel 容器（全部初始透明）
-        local bgFrames = {}
+        -- 双缓冲：仅2个ImageLabel交替显示
+        local bgLabelA = Instance.new("ImageLabel")
+        bgLabelA.Name = "BgBufA"
+        bgLabelA.Size = UDim2.new(0, 600, 0, 300)
+        bgLabelA.Position = UDim2.new(0.5, -300, 0.5, -150)
+        bgLabelA.BackgroundTransparency = 1
+        bgLabelA.ImageTransparency = 1
+        bgLabelA.ZIndex = 1
+        bgLabelA.ScaleType = Enum.ScaleType.Stretch
+        bgLabelA.Parent = animGui
+
+        local bgLabelB = Instance.new("ImageLabel")
+        bgLabelB.Name = "BgBufB"
+        bgLabelB.Size = UDim2.new(0, 600, 0, 300)
+        bgLabelB.Position = UDim2.new(0.5, -300, 0.5, -150)
+        bgLabelB.BackgroundTransparency = 1
+        bgLabelB.ImageTransparency = 1
+        bgLabelB.ZIndex = 1
+        bgLabelB.ScaleType = Enum.ScaleType.Stretch
+        bgLabelB.Parent = animGui
+
+        -- 构建帧URL列表
+        local bgFrameUrls = {}
         for i = 1, ANIM_TOTAL do
-            local lbl = Instance.new("ImageLabel")
-            lbl.Name = "BgF" .. i
-            lbl.Size = UDim2.new(0, 600, 0, 300)
-            lbl.Position = UDim2.new(0.5, -300, 0.5, -150)
-            lbl.BackgroundTransparency = 1
-            lbl.ImageTransparency = 1  -- 初始隐藏
-            lbl.ZIndex = 1
-            lbl.Parent = animGui
-            bgFrames[i] = lbl
-        end
-
-        task.spawn(function()
-            print("[背景] 开始加载 152 帧到各自 ImageLabel...")
-            for i = 1, ANIM_TOTAL do
-                local fname = string.format("frame_%04d.jpg", i)
-                local fpath = CACHE_FOLDER .. "/" .. fname
-                local url = nil
-
-                if isfile and isfile(fpath) and readfile then
-                    if getcustomasset then
-                        url = getcustomasset(fpath)
-                    else
-                        url = GITEE_BASE .. fname
-                    end
-                else
+            local fname = string.format("frame_%04d.jpg", i)
+            local fpath = CACHE_FOLDER .. "/" .. fname
+            if isfile and isfile(fpath) and readfile and getcustomasset then
+                bgFrameUrls[i] = getcustomasset(fpath)
+            else
+                -- 无缓存则从网络加载并保存
+                bgFrameUrls[i] = GITEE_BASE .. fname
+                task.spawn(function()
                     local ok, data = pcall(function()
                         return game:HttpGet(GITEE_BASE .. fname)
                     end)
-                    if ok and data then
-                        if writefile then writefile(fpath, data) end
+                    if ok and data and #data > 100 then
+                        pcall(function() writefile(fpath, data) end)
                     end
-                    if getcustomasset then
-                        url = getcustomasset(fpath)
-                    else
-                        url = GITEE_BASE .. fname
-                    end
-                end
-
-                -- 把图片设置到对应的 ImageLabel（只设一次，之后永远不改）
-                bgFrames[i].Image = url or ""
-
-                -- 第一帧立即显示
-                if i == 1 then
-                    bgFrames[1].ImageTransparency = 0
-                    print("[背景] 第一帧已显示")
-                end
+                end)
             end
+        end
 
-            print("[背景] 152帧全部加载完毕，预加载到 GPU...")
-            -- 把所有 ImageLabel 传入 PreloadAsync，强制引擎上传到 GPU
+        -- 立即显示第一帧
+        if bgFrameUrls[1] then
+            bgLabelA.Image = bgFrameUrls[1]
+            bgLabelA.ImageTransparency = 0
+            print("[背景] 第一帧已显示")
+        end
+
+        -- 后台滚动预加载（小批量，不阻塞UI线程）
+        task.spawn(function()
+            print("[背景] 后台预加载 " .. ANIM_TOTAL .. " 帧...")
             local ContentProvider = game:GetService("ContentProvider")
-            pcall(function()
-                ContentProvider:PreloadAsync(bgFrames)
-            end)
-            print("[背景] GPU 预加载完成，开始循环播放")
+            local PRELOAD_BATCH = 10
+            for batchStart = 1, ANIM_TOTAL, PRELOAD_BATCH do
+                local batchEnd = math.min(batchStart + PRELOAD_BATCH - 1, ANIM_TOTAL)
+                local batch = {}
+                for i = batchStart, batchEnd do
+                    local tmp = Instance.new("ImageLabel")
+                    tmp.Image = bgFrameUrls[i]
+                    tmp.ImageTransparency = 1
+                    tmp.Size = UDim2.new(0, 1, 0, 1)
+                    tmp.Parent = animGui
+                    batch[#batch + 1] = tmp
+                end
+                pcall(function()
+                    ContentProvider:PreloadAsync(batch)
+                end)
+                for _, tmp in ipairs(batch) do
+                    tmp:Destroy()
+                end
+                task.wait(0.01)
+            end
+            print("[背景] 后台预加载完成")
+        end)
 
-            -- 播放循环：只切换透明度，不碰 Image 属性
+        -- 播放循环：双缓冲 + task.wait
+        task.spawn(function()
             local cur = 1
-            local lastSwitch = 0
             local FPS = 30
             local interval = 1 / FPS
+            while true do
+                if not animGui or not animGui.Parent then break end
+                local frameStart = tick()
 
-            local animConn
-            animConn = RunService.RenderStepped:Connect(function()
-                if not animGui or not animGui.Parent then
-                    if animConn then animConn:Disconnect() end
-                    return
+                if cur % 2 == 1 then
+                    bgLabelA.Image = bgFrameUrls[cur]
+                    bgLabelA.ImageTransparency = 0
+                    bgLabelB.ImageTransparency = 1
+                else
+                    bgLabelB.Image = bgFrameUrls[cur]
+                    bgLabelB.ImageTransparency = 0
+                    bgLabelA.ImageTransparency = 1
                 end
-                local now = tick()
-                if now - lastSwitch >= interval then
-                    lastSwitch = now
-                    -- 隐藏当前帧
-                    bgFrames[cur].ImageTransparency = 1
-                    -- 切到下一帧并显示
-                    cur = cur + 1
-                    if cur > ANIM_TOTAL then cur = 1 end
-                    bgFrames[cur].ImageTransparency = 0
+
+                cur = cur + 1
+                if cur > ANIM_TOTAL then cur = 1 end
+
+                local elapsed = tick() - frameStart
+                if elapsed < interval then
+                    task.wait(interval - elapsed)
                 end
-            end)
+            end
         end)
 
         end -- if isSpecialUI（10% 特殊动画）
@@ -2041,23 +2062,8 @@ local function playLoadingAnimation()
             finishLoading()
         end)
 
-        -- 播放BGM（本地缓存）
-        pcall(function()
-            bgmSound = Instance.new("Sound")
-            if isfile(BGM_FILE) then
-                bgmSound.SoundId = getcustomasset(BGM_FILE)
-            else
-                bgmSound.SoundId = LOADING_BASE .. "loading_bgm.mp3"
-            end
-            bgmSound.Volume = 0.5
-            bgmSound.Looped = false
-            bgmSound.Parent = workspace
-            bgmSound:Play()
-            print("[加载] BGM 已开始播放")
-        end)
-
         -- ========================================================
-        -- 播放动画：双缓冲交替 + task.wait（不依赖RenderStepped）
+        -- 播放动画 + BGM（同一协程，确保同步开始）
         -- 手机端PreloadAsync不会阻塞task协程，确保动画流畅
         -- ========================================================
         print("[加载] 开始播放动画（双缓冲 " .. readyCount .. " 帧，30fps）...")
@@ -2067,6 +2073,21 @@ local function playLoadingAnimation()
         local interval = 1 / FPS
 
         task.spawn(function()
+            -- 第一帧显示的同时开始播放BGM，确保同步
+            pcall(function()
+                bgmSound = Instance.new("Sound")
+                if isfile(BGM_FILE) then
+                    bgmSound.SoundId = getcustomasset(BGM_FILE)
+                else
+                    bgmSound.SoundId = LOADING_BASE .. "loading_bgm.mp3"
+                end
+                bgmSound.Volume = 0.5
+                bgmSound.Looped = false
+                bgmSound.Parent = workspace
+                bgmSound:Play()
+                print("[加载] BGM 已开始播放")
+            end)
+
             while cur <= readyCount and not skipPressed do
                 local frameStart = tick()
 
